@@ -20,3 +20,7 @@ docs
 libs
 output
 renv/library
+data
+data/sensitive_metadata
+wildcard-soil.Rproj
+src/sandbox
