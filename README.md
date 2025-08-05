@@ -6,15 +6,15 @@
 
 # wildcard-soil
 
-[Deroo, Heleen![ORCID logo](https://info.orcid.org/wp-content/uploads/2019/11/orcid_16x16.png)](https://orcid.org/0000-0003-4487-0262)[^aut][^cre][^RIfNaF]
-[De Win, Yannick![ORCID logo](https://info.orcid.org/wp-content/uploads/2019/11/orcid_16x16.png)](https://orcid.org/0009-0002-7015-2010)[^aut][^inbo.be]
+[De Win, Yannick![ORCID logo](https://info.orcid.org/wp-content/uploads/2019/11/orcid_16x16.png)](https://orcid.org/0009-0002-7015-2010)[^aut][^cre][^inbo.be]
+[Deroo, Heleen![ORCID logo](https://info.orcid.org/wp-content/uploads/2019/11/orcid_16x16.png)](https://orcid.org/0000-0003-4487-0262)[^aut]
+
 Research Institute for Nature and Forest (INBO)[^cph][^fnd]
 
 [^cph]: copyright holder
 [^fnd]: funder
 [^aut]: author
 [^cre]: contact person
-[^RIfNaF]: Research Institute for Nature and Forest
 [^inbo.be]: Research Institute for Nature and Forest (INBO)
 
 **keywords**: wildcard; euforia; forest soils; proforestation; soil carbon; soil biodiversity; european forests
