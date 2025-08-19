@@ -42,7 +42,7 @@ source("./data/sensitive_metadata/google_drive_links.R")
 
 # Date of last sample registration
 # (samples that arrived after this will be filtered for)
-date_last_reg <- parsedate::parse_date("2025-07-01")
+date_last_reg <- parsedate::parse_date("2025-08-01")
 
 
 
@@ -75,12 +75,19 @@ drive_download(as_id(id_overview),
 
 overview_partners <- read_excel(file_path,
                                 sheet = 1) %>%
-  filter(grepl("WP2", partnerType)) %>%
+  filter(!is.na(partner)) %>%
   mutate(
+    wp = case_when(
+      grepl("WP2", partnerType) ~ "WP2",
+      grepl("WP3", partnerType) ~ "WP3"),
     partner = case_when(
       partner == "BGDNP" ~ "BGD-NP",
       partner == "AGRARIA department - UNIRC" ~ "AlberIT - UNIRC",
-      TRUE ~ partner))
+      partner == "DISAFA - UNITO" ~ "UNITO",
+      partner == "UniPa" ~ "UNIPA",
+      partner == "VUK" & grepl("WP3", partnerType) ~ "VUKOZ(VUK)",
+      TRUE ~ partner),
+    MTA_type = coalesce(MTA_type, "not needed"))
 
 
 
@@ -90,19 +97,72 @@ overview_partners <- read_excel(file_path,
 # This does not use the harmonised sample_ids, but the originally submitted
 # sample_ids by the partners (sample lists Annex B and Annex C)
 
+name_update <- readline(prompt = paste0("What is your name? ",
+                                        "(i.e. first and family name of person",
+                                        " updating the ",
+                                        "freezer checklist) "))
+
 s_freezer <- samples %>%
   filter(shipment_type == "cold") %>%
   filter(arrival_date_inbo > date_last_reg) %>%
+  left_join(
+    overview_partners %>%
+      select(partner, MTA_type, wp),
+    by = join_by("institute_sampling" == "partner",
+                 "wp")) %>%
+  mutate(
+    sample_status_freezer = case_when(
+      sample_code_harm == "OFH_eDNA1" ~ "Pending analysis ETHZ (eDNA1 OFH)",
+      sample_code_harm == "M01_eDNA1" ~ "Pending shipment ETHZ (eDNA1 M01)",
+      grepl("_eDNA2$", sample_code_harm) & wp == "WP3" ~
+        "Pending funding availability (eDNA2 WP3)",
+      grepl("_eDNA2$", sample_code_harm) & wp == "WP2" ~
+        "Pending INBO eDNA analysis",
+      grepl("_eDNA$", sample_code_harm) ~ "Back-up samples Belgium (eDNA)"),
+    edna_inbo_batch_id = "",
+    extract_fate_after_project = case_when(
+      # eDNA2
+      grepl("_eDNA2$", sample_code_harm) &
+        wp == "WP2" &
+        MTA_type %in% c("MTA2", "not needed") ~ "Archive in collection (MTA2)",
+      grepl("_eDNA2$", sample_code_harm) &
+        wp == "WP2" &
+        MTA_type == "MTA1" ~ "Destroy (MTA1)",
+      grepl("_eDNA2$", sample_code_harm) &
+        (wp == "WP3" | grepl("^VUK", institute_sampling)) &
+        MTA_type %in% c("MTA5", "not needed") ~
+        "Send to VUK (if extracted) (MTA5)",
+      # eDNA1
+      grepl("_eDNA1$", sample_code_harm) &
+        wp == "WP2" &
+        MTA_type %in% c("MTA2", "not needed") ~
+        "ETHZ: Send back to INBO to archive in collection (MTA4)",
+      grepl("_eDNA1$", sample_code_harm) &
+        wp == "WP2" &
+        MTA_type == "MTA1" ~ "ETHZ: Destroy (MTA3)",
+      grepl("_eDNA1$", sample_code_harm) &
+        (wp == "WP3" | grepl("^VUK", institute_sampling)) &
+        MTA_type %in% c("MTA5", "not needed") ~
+        "ETHZ: Send to VUK (MTA6)"),
+    last_update_date = as.Date(Sys.Date()),
+    last_update_who = name_update) %>%
   # Sometimes you need to include an extra filter
   # since the capacity of the Windows clipboard is limited.
   # Just make sure that all samples are registered.
   # <= 100 rows are fine.
-  filter(grepl("UNIUD", institute_sampling) &
-           wp == "WP3") %>%
-  select(-institute_harm, -res_id_inst_harm, -sub_id_harm,
-         -arrival_date_inbo, -shipment_type,
-         -plot_code_harm, -sample_id_harm, -reserve_name,
-         -institute_sampling)
+  # filter(grepl("UNIUD", institute_sampling) &
+  #          wp == "WP3") %>%
+  select(sample_id, sample_code, material, mass_sample_gross,
+         plot_id, country_origin, institute_origin, res_id_inst, sub_id,
+         wp, date_survey, date_shipment_departure, shipment_company,
+         date_shipment_arrival, institute_receiving, transfer_third_party,
+         cold_at_sampling, stored_frozen, shipped_frozen,
+         country_code_harm, composed_site_id, sample_code_harm,
+         sample_status_freezer, edna_inbo_batch_id, extract_fate_after_project,
+         last_update_date, last_update_who)
+
+
+
 
 glimpse(s_freezer)
 
@@ -228,6 +288,7 @@ s_rf <- s_dist_full %>%
     by = "plot_code_harm") %>%
   left_join(
     overview_partners %>%
+      filter(grepl("WP2", partnerType)) %>%
       select(partner, MTA_type),
     by = join_by("institute_sampling" == "partner")) %>%
   rowwise() %>%
@@ -259,7 +320,7 @@ s_rf <- s_dist_full %>%
                "10-30"),
       grepl("M36", sample_code_harm) ~
         ifelse(!is.na(depth_bedrock),
-               paste0("30-", as.character(min(c(30, depth_bedrock)))),
+               paste0("30-", as.character(min(c(60, depth_bedrock)))),
                "30-60"),
       grepl("M61", sample_code_harm) ~
         ifelse(!is.na(depth_bedrock),
@@ -280,6 +341,8 @@ s_rf <- s_dist_full %>%
     diepte_monster, archief_id)
 
 glimpse(s_rf)
+
+# To DO: accent zetten bij dieptes zodat het geen datum wordt?
 
 
 ## 3.1. Mineral ----
@@ -468,7 +531,8 @@ write.table(s_undist, "clipboard", sep = "\t",
             row.names = FALSE, col.names = FALSE)
 
 
-
+# Don't forget to update the date of the last sample registration
+# in the beginning of this script
 
 
 
