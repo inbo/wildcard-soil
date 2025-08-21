@@ -50,11 +50,15 @@ source("./data/sensitive_metadata/google_drive_links.R")
 
 ## · Data from Survey123 app ----
 
-data_app <- read.csv("./data/raw_data/app_data/INBO_WP3_DATA.csv")
-glimpse(data_app)
+app_data <- read.csv("./data/raw_data/app_data/INBO_WP3_DATA.csv")
+glimpse(app_data)
 
 sumava <- read_excel("./src/sandbox/Field_Form_WP3_Sumava_wet_chrono.xlsx")
 glimpse(sumava)
+
+source("./src/functions/get_app_data.R")
+app_data <- get_app_data()
+
 
 
 # Theoretical samples
@@ -102,6 +106,8 @@ undist <- read_sheet(as_id(id_undist),
 
 ## · Data from analytical central lab (via inbolims) ----
 
+# First time: check https://github.com/inbo/inbolims
+
 # Switch on VPN of INBO
 cat("Switch on VPN of INBO.\n")
 
@@ -144,7 +150,7 @@ datax_lab <- datax_lab %>%
 # Plot survey-level data ----
 
 
-df_plot_survey <- data_app %>%
+df_plot_survey <- app_data %>%
   rename(
     country_code = country,
     institute = team,
@@ -206,7 +212,7 @@ d_properties <- read.csv(paste0("./data/additional_data/",
                                 "dictionary_disturbed_properties.csv"),
                          sep = ";")
 
-df_properties <- data_app %>%
+df_properties <- app_data %>%
   # Make sure that all layer codes ("M01", "m01" etc) are capitalised
   # (in the column names)
   # (only column names starting with this code_layer or
@@ -280,7 +286,7 @@ glimpse(df_properties)
 ## Summarise mass and thickness of forest floor ----
 
 
-df_sampling_points <- data_app %>%
+df_sampling_points <- app_data %>%
   # Make sure that all layer codes ("M01", "m01" etc) are capitalised
   # (in the column names)
   # (only column names starting with this code_layer or
@@ -368,7 +374,7 @@ d_kopecky_depths <- tibble(
   code = c(10, 11, 12, 13),
   code_layer = c("M01", "M13", "M36", "M61"))
 
-df_rings <- data_app %>%
+df_rings <- app_data %>%
   select(code,
          # Volume of kopecky ring
          # (typically one ring per depth x sampling point)
@@ -397,7 +403,7 @@ df_rings <- data_app %>%
 ## Reshape data sample checklist into one row per code_layer per plot ----
 
 
-df_layers <- data_app %>%
+df_layers <- app_data %>%
   select(-ends_with("dist"), -contains("thickness"), -contains("tamass"),
          -vol_ring) %>%
   rename_with(~ str_replace_all(., paste0("(", paste(tolower(layers),
