@@ -155,6 +155,16 @@ get_wp3_sites <- function() {
       latitude,
       longitude)
 
+  wp3_sites <- wp3_sites %>%
+    mutate(
+      # Institute that does the soil sampling
+      institute_sampling = case_when(
+        institute %in% c("HUN-REN Centre for Ecological Research/VUKOZ(VUK)") ~
+          "VUKOZ(VUK)",
+        TRUE ~ institute)) %>%
+    relocate(institute_sampling, .after = institute)
+
+
   return(wp3_sites)
 
 

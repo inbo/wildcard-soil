@@ -113,6 +113,12 @@ get_sample_lists <- function() {
       }
     }
 
+    # TO DO: for LWF, the sample list (normal shipment) contains two records
+    # referring to the same sample (part 1 and part 2), i.e.,
+    # "LWF__65_a__Friedergries__NA" OFH_carbon.
+    # Combine these into one record.
+
+
     # Select and reorder columns
     df <- df %>%
       select(any_of(all_cols)) %>%
@@ -134,6 +140,7 @@ get_sample_lists <- function() {
         # wp =
         #   if (!"wp" %in% names(.)) NA_character_ else wp,
         wp = case_when(
+          grepl("Extra samples", wp) ~ "WP2",
           !is.na(wp) ~ wp,
           shipment_type == "normal" ~ "WP2",
           TRUE ~ NA)) %>%
