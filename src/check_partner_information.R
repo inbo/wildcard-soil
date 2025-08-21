@@ -48,6 +48,12 @@ if (!exists("wp3_sites", envir = globalenv())) {
 
 
 
+# Data Survey123 app
+
+source("./src/functions/get_app_data.R")
+app_data <- get_app_data()
+
+
 
 # PIR: Compare sample list with app
 # PIR: check distance from HIS metadata table coordinates
@@ -68,6 +74,61 @@ app_data %>%
   ) %>%
   ungroup() %>%
   select(-bedrock_vals, -n_filled, -all_shallow, -n_missing)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+df_rings <- app_data %>%
+  select(code, plot_code, composed_site_id, wp,
+         team_harmonized, institute_sampling,
+         # Volume of kopecky ring
+         # (typically one ring per depth x sampling point)
+         vol_ring,
+         starts_with("P")) %>%
+  select(code, plot_code, composed_site_id, wp,
+         team_harmonized, institute_sampling,
+         vol_ring, ends_with("_bulk_density_lyr")) %>%
+  pivot_longer(cols = starts_with("P", ignore.case = FALSE),
+               names_to = "sampling_point",
+               values_to = "code_layer") %>%
+  mutate(
+    # Keep only "P1", "P2", etc.
+    sampling_point = str_extract(sampling_point, "^P\\d+")) %>%
+  separate_rows(code_layer, sep = ",") %>%
+  # mutate(code_depths = as.integer(str_trim(code_depths))) %>%
+  # left_join(d_kopecky_depths,
+  #           by = c("code_depths" = "code")) %>%
+  filter(!is.na(code_layer)) %>%
+  group_by(code, plot_code, composed_site_id, wp,
+           team_harmonized, institute_sampling,
+           code_layer, vol_ring) %>%
+  reframe(
+    undist_sampling_points = paste(sort(unique(sampling_point)),
+                                   collapse = ","),
+    count_rings = n())
+
+
+
+
+
+
+
+
+
+
 
 
 
