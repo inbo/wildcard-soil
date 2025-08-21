@@ -805,15 +805,33 @@ while (dev.cur() > 1) dev.off()
 
 
 
-## Different pdfs per partner ----
+## Different pdfs per partner and dist/undist ----
 
 for (inst in unique(data$institute_sampling)) {
 
-  labels <- pmap(
-    data %>%
-      filter(institute_sampling == inst) %>%
-      select(staal_id_pretrt, plot_code, reserve_name),
-    make_label_pretrt)
+  for (type in c("disturbed", "undisturbed")) {
+
+    if (type == "disturbed") {
+
+      labels <- pmap(
+        data %>%
+          filter(institute_sampling == inst) %>%
+          filter(grepl("^C-", staal_id_pretrt)) %>%
+          select(staal_id_pretrt, plot_code, reserve_name),
+        make_label_pretrt)
+
+    } else
+
+    if (type == "undisturbed") {
+
+      labels <- pmap(
+        data %>%
+          filter(institute_sampling == inst) %>%
+          filter(grepl("^BD-", staal_id_pretrt)) %>%
+          select(staal_id_pretrt, plot_code, reserve_name),
+        make_label_pretrt)
+
+    }
 
   pages <- split(labels,
                  ceiling(seq_along(labels) / labels_per_page))
@@ -822,7 +840,11 @@ for (inst in unique(data$institute_sampling)) {
   # Export to PDF
 
   pdf(paste0("./output/sample_pretreatment/pretreatment_labels_",
-             inst, ".pdf"),
+             inst, "_",
+             case_when(
+               type == "disturbed" ~ "C",
+               type == "undisturbed" ~ "BD"),
+             ".pdf"),
       width = 8.27,
       height = 11.69) # A4 size in inches
 
@@ -835,6 +857,8 @@ for (inst in unique(data$institute_sampling)) {
   dev.off()
 
   while (dev.cur() > 1) dev.off()
+
+  }
 
 } # End of "for loop over sampling institutes"
 
