@@ -6,19 +6,31 @@ rf_overview <- data.frame(
   rf = c("V-25V006-01",
          "V-25V006-02",
          "V-25V006-03",
-         "V-25V006-04"),
+         "V-25V006-04",
+         "V-25V006-05",
+         "V-25V006-06"
+         ),
   id = c(id_rf01,
          id_rf02,
          id_rf03,
-         id_rf04),
+         id_rf04,
+         id_rf05,
+         id_rf06
+         ),
   partners = c("INBO",
                "INBO",
                "UNIUD|BFNP|LWF",
-               "UNIUD|BFNP|LWF"),
+               "UNIUD|BFNP|LWF",
+               "WSL",
+               "WSL"
+               ),
   samples = c("M01|M13|M36|M61",
               "OFH",
               "M01|M13|M36|M61",
-              "OFH"))
+              "OFH",
+              "M01|M13|M36|M61",
+              "OFH"
+              ))
 
 assign("rf_overview", rf_overview)
 
