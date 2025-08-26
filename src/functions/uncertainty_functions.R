@@ -53,7 +53,8 @@ add_cf_uncertainty <- function(coaf_2mm,
 
   coarse_fragment_vol_ring_unc <- uncertainty_lab(coarse_fragment_vol_ring)
 
-  # For 2-50 mm, take the minimum of the field and lab uncertainty ranges
+  # For 2-50 mm, take the widest bound around the field and lab uncertainty
+  # ranges
 
   unc_2_50mm <- c(pmax(0, min(coaf_2_50mm_unc, coarse_fragment_vol_ring_unc)),
                   pmin(100, max(coaf_2_50mm_unc, coarse_fragment_vol_ring_unc)))
