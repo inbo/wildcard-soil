@@ -24,10 +24,21 @@ get_lab_data <- function() {
   loq_tic <- 0.1
   loq_tn <- 0.1
 
+  # Create function harmonise_below_loqs
+
   harmonise_below_loqs <- function(var, tc = NULL, tic = NULL, tn = NULL,
                                    loq_tc = 0.5, # g C kg-1 DS
                                    loq_tic = 0.1, # g C kg-1 DS
                                    loq_tn = 0.1) { # g N kg -1 DS
+
+    # This function converts below-LOQ values to 50 % of the LOQ
+
+    # var: "TOC", "TIC", "TC" or "TN"
+    # tc, tic, tn: numeric vectors with total C, total inorganic C or
+    # total N values
+    # loq_* : Limits of quantification. Defaults are values for analytical
+    # lab INBO 2025
+
 
     if (var == "TOC") {
 
@@ -90,16 +101,21 @@ get_lab_data <- function() {
 
   # Lab measurement uncertainty
 
+  # Create function compute_uncertainty
+
   compute_uncertainty <- function(var, tc = NULL, tic = NULL, tn = NULL,
                                   urel_tc = 0.09,
                                   urel_tic = 0.106,
                                   urel_tn = 0.06) {
+
+    # This function calculates the absolute uncertainty of a certain
+    # parameter value
+
     # var: "TOC", "TIC", "TC" or "TN"
-    # tc, tic, tn: numeric vectors from your dataframe
+    # tc, tic, tn: numeric vectors with total C, total inorganic C or
+    # total N values
     # urel_* : relative expanded uncertainties (fractions). Defaults are
     # uncertainty in lab analyses ("Meetonzekerheid") calculated by INBO BMK.
-
-    # Returns ABSOLUTE uncertainty!
 
     if (var == "TOC") {
 
@@ -147,14 +163,22 @@ get_lab_data <- function() {
 
   # Final uncertainty ranges lab
 
+  # Create function add_lab_uncertainty
+
   add_lab_uncertainty <- function(var, tc = NULL, tic = NULL, tn = NULL,
                                   loq_tc = 0.5, # g C kg-1 DS
                                   loq_tic = 0.1, # g C kg-1 DS
-                                  loq_tn = 0.1) {
+                                  loq_tn = 0.1) { # g N kg-1 DS
 
     # This function returns the minimum and the maximum of the uncertainty
     # interval, taking the LOQ into account (uncertainty range for below-LOQ
     # values goes from 0 to LOQ)
+
+    # var: "TOC", "TIC", "TC" or "TN"
+    # tc, tic, tn: numeric vectors with total C, total inorganic C or
+    # total N values
+    # loq_* : Limits of quantification. Defaults are values for analytical
+    # lab INBO 2025
 
     var_long <- case_when(
       var == "TOC" ~ "c_organic_total",
