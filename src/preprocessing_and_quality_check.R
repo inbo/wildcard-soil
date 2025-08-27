@@ -47,6 +47,19 @@ if (!exists("wp3_sites", envir = globalenv())) {
 }
 
 
+write.table(his,
+            file = "./data/his.csv",
+            row.names = FALSE,
+            na = "",
+            sep = ";",
+            dec = ".")
+
+write.table(wp3_sites,
+            file = "./data/wp3_sites.csv",
+            row.names = FALSE,
+            na = "",
+            sep = ";",
+            dec = ".")
 
 # Data Survey123 app
 

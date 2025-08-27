@@ -40,7 +40,8 @@ stopifnot(require("tidyverse"),
           require("assertthat"),
           require("inbolims"),
           require("ggpmisc"),
-          require("patchwork"))
+          require("patchwork"),
+          require("readxl"))
 
 # Source URLs of sensitive Google Drive links
 source("./data/sensitive_metadata/google_drive_links.R")
@@ -50,7 +51,7 @@ source("./data/sensitive_metadata/google_drive_links.R")
 
 ## · Data from Survey123 app ----
 
-app_data <- read.csv("./data/raw_data/app_data/INBO_WP3_DATA.csv")
+app_data <- read.csv("./data/raw_data/app_data/archive/INBO_WP3_DATA.csv")
 glimpse(app_data)
 
 sumava <- read_excel("./src/sandbox/Field_Form_WP3_Sumava_wet_chrono.xlsx")
@@ -106,43 +107,13 @@ undist <- read_sheet(as_id(id_undist),
 
 ## · Data from analytical central lab (via inbolims) ----
 
-# First time: check https://github.com/inbo/inbolims
+# More information on https://github.com/inbo/inbolims
 
 # Switch on VPN of INBO
 cat("Switch on VPN of INBO.\n")
 
-connection <- lims_connect()
-samples_lab <- lims_sample_information(connection, project = c("V-24V006-01"))
-
-
-data_lab <- read_lims_data(connection = connection,
-                               project = c("V-24V006-01"),
-                               sql_template = "default",
-                               show_query = FALSE)
-
-below_loq <- data_lab %>%
-  filter(grepl("<", WaardeGeformatteerd))
-
-assertthat::assert_that(nrow(below_loq) == 0,
-                        msg = paste0("Some lab values are below LOQ. ",
-                                     "Implement below-LOQ harmonisation in ",
-                                     "R script."))
-
-# TO DO: harmonise below-LOQ data! (replace those by 50 % of the LOQ)
-# See last part of R script:
-# https://github.com/inbo/fscc/blob/main/src/functions/harmonise_below_loqs.R
-# For the SOC stocks, you can propagate the uncertainty in TC values below LOQ:
-# minimum: 0
-# maximum: LOQ
-
-# Also add the uncertainty in lab analyses of TOC etc (using ring test data?)
-
-datax_lab <- lims_report_xtab(data_lab)
-
-datax_lab <- datax_lab %>%
-  mutate(across(
-    where(~ all(suppressWarnings(!is.na(as.numeric(.)) | is.na(.)))),
-    as.numeric))
+source("./src/functions/get_lab_data.R")
+data_lab <- get_lab_data()
 
 
 
@@ -216,7 +187,9 @@ df_properties <- app_data %>%
   # Make sure that all layer codes ("M01", "m01" etc) are capitalised
   # (in the column names)
   # (only column names starting with this code_layer or
-  # containing "_[code_layer]", i.e., "vol_ring" shouldn't be converted)
+  # containing "_[code_layer]",
+  # in other words, column "vol_ring", which contains "ol", shouldn't be
+  # converted)
   rename_with(
     ~ str_replace_all(.,
                       paste0("(?<=^|_)", paste0(tolower(layers),
@@ -398,6 +371,7 @@ df_rings <- app_data %>%
                                    collapse = ","),
     count_rings = n())
 
+df_rings
 
 
 ## Reshape data sample checklist into one row per code_layer per plot ----
@@ -573,7 +547,7 @@ dist2024 <- dist2024 %>%
   arrange(plot_code_app, code_layer)
 
 
-
+glimpse(dist2024)
 
 
 
@@ -586,13 +560,16 @@ undist_harm <- undist %>%
     sample_id = `sample_id (unieke veldcode uit Survey123 app)`,
     survey_date = `Datum bemonstering`,
     mass_recipient = `Massa (g) recipiënt zonder deksel`,
-    mass_before =
-      `Massa (g) monster voor (inclusief recipiënt zonder deksel en steentjes)`,
     mass_after =
       `Massa fine earth (g) na (inclusief recipiënt zonder deksel)`,
     mass_cf = `Massa steentjes (> 2 mm) (g) droog zonder recipiënt`,
     mass_roots =
       `Massa wortels (droog; indien aanzienlijk) (g) zonder recipiënt`) %>%
+  # Using rename_with because of too long column name
+  rename_with(~"mass_before", all_of(paste0("Massa (g) monster voor ",
+                                            "(inclusief recipiënt zonder ",
+                                            "deksel, steentjes en evt. ",
+                                            "label)"))) %>%
   select(sample_id, survey_date, mass_recipient, mass_before, mass_after,
          mass_cf, mass_roots) %>%
   mutate(
@@ -612,29 +589,25 @@ undist_harm <- undist %>%
   mutate(
     plot_code_app = paste0(
       country_code, "-",
-      gsub("_", "-", plot_code))) %>%
+      gsub("_", "-", plot_code)))
+
+source("./src/functions/safe_numeric_convert.R")
+
+columns_to_check <- c("mass_recipient",
+                      "mass_before",
+                      "mass_after",
+                      "mass_cf",
+                      "mass_roots")
+
+
+undist_harm <- undist_harm %>%
   mutate(
-    # clean and convert to numeric
-    mass_recipient = sapply(mass_recipient, function(x) {
-      if (is.null(x)) return(NA_real_)
-      as.numeric(gsub(",", ".", x))
-    }),
-    mass_before = sapply(mass_before, function(x) {
-      if (is.null(x)) return(NA_real_)
-      as.numeric(gsub(",", ".", x))
-    }),
-    mass_after = sapply(mass_after, function(x) {
-      if (is.null(x)) return(NA_real_)
-      as.numeric(gsub(",", ".", x))
-    }),
-    mass_cf = sapply(mass_cf, function(x) {
-      if (is.null(x)) return(NA_real_)
-      as.numeric(gsub(",", ".", x))
-    }),
-    mass_roots = sapply(mass_roots, function(x) {
-      if (is.null(x)) return(NA_real_)
-      as.numeric(gsub(",", ".", x))
-    }))
+    # Correct small typo
+    mass_before = case_when(
+      mass_before == "349/90" ~ "349.90",
+      TRUE ~ mass_before)) %>%
+    mutate(across(all_of(columns_to_check),
+                  ~ safe_numeric_convert(.x, cur_column())))
 
 
 assertthat::assert_that(
@@ -704,6 +677,8 @@ df_2024 <- undist2024 %>%
 # correspond more or less with those from the central lab
 # PIR: Check if coarse fragments percentage reported in ">2 mm" fraction
 # is >= those reported in the ">50 mm" fraction
+# PIR: Check if the undisturbed moisture contents are more or less making
+# sense
 
 
 source("./src/functions/uncertainty_functions.R")
@@ -782,5 +757,19 @@ glimpse(test)
 
 
 # PIR: vol_ring and surface_frame should be > 0
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
