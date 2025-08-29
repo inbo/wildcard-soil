@@ -50,7 +50,7 @@ get_wp3_sites <- function() {
         site_id,
         sep = "__"),
       site_id = case_when(
-        is.na(site_id) | str_trim(site_id) == "" ~ `no.`,
+        is.na(site_id) | str_trim(site_id) == "" ~ as.character(`no.`),
         TRUE ~ site_id),
       plot_code = paste(
         institute,

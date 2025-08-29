@@ -35,7 +35,7 @@ get_app_data <- function(path = NULL) {
     dirs <- list.dirs(path_app_data, recursive = FALSE, full.names = TRUE)
 
     if (any( "./data/raw_data/app_data/Field-data/Field-data" %in% dirs)) {
-      path_app_data <-  "./data/raw_data/app_data/Field-data/Field-data"
+      path_app_data <-  "./data/raw_data/app_data/Field-data/Field-data/"
     }
 
   } else {
@@ -96,25 +96,24 @@ get_app_data <- function(path = NULL) {
   # from the Survey123 app (e.g. forest floor data)
 
   files_to_exclude <- c(
-    paste0("./data/raw_data/app_data/Field-data/Field-data/",
+    paste0(path_app_data,
            "VUK-Czechia-Hungary/WP3_sites/Beskydy-Mts/",
            "WILDCARD-WP3-CZ-VUK-Beskydy soils.xlsx"),
-    paste0("./data/raw_data/app_data/Field-data/Field-data/",
+    paste0(path_app_data,
            "VUK-Czechia-Hungary/WP3_sites/Bohemian-Karst/",
            "WILDCARD-WP3-CZ-VUK-Cesky Kras (Bohemian Karst) soils.xlsx"),
-    paste0("./data/raw_data/app_data/Field-data/Field-data/",
+    paste0(path_app_data,
            "VUK-Czechia-Hungary/WP3_sites/Hungary-Kiskunsag/",
            "WILDCARD-WP3-HU-VUK-Kiskusag soils.xlsx"),
-    paste0("./data/raw_data/app_data/Field-data/Field-data/",
+    paste0(path_app_data,
            "VUK-Czechia-Hungary/WP3_sites/Hungary-Tokaj/",
            "WILDCARD-WP3-HU-VUK-Tokaj soils.xlsx"),
-    paste0("./data/raw_data/app_data/Field-data/Field-data/",
+    paste0(path_app_data,
            "VUK-Czechia-Hungary/WP3_sites/Sumava-Dry/",
            "WILDCARD-WP3-CZ-VUK-Sumava_dry_soils.xlsx"),
-    paste0("./data/raw_data/app_data/Field-data/Field-data/",
+    paste0(path_app_data,
            "VUK-Czechia-Hungary/WP3_sites/Sumava-Wet/",
-           "WILDCARD-WP3-CZ-VUK-Sumava-wet-soils.xlsx")
-  )
+           "WILDCARD-WP3-CZ-VUK-Sumava-wet-soils.xlsx"))
 
   app_files <- app_files[which(!app_files %in% files_to_exclude)]
 
@@ -145,7 +144,16 @@ get_app_data <- function(path = NULL) {
         else x,
         y =
           if (!"y" %in% names(.)) NA_real_
-        else y) %>%
+        else y,
+        humus_form =
+          if (!"humus_form" %in% names(.)) NA_character_
+        else humus_form,
+        humus_form1 =
+          if (!"humus_form1" %in% names(.)) NA_character_
+        else humus_form1,
+        humus_form2 =
+          if (!"humus_form2" %in% names(.)) NA_character_
+        else humus_form2) %>%
       # UTC time zone (Coordinated Universal Time)
       mutate(
         date_time =
@@ -166,9 +174,17 @@ get_app_data <- function(path = NULL) {
         latitude = as.numeric(str_replace(latitude, ",", ".")),
         longitude = as.numeric(str_replace(longitude, ",", ".")),
         hor_accuracy = coalesce(hor_accuracy_aut,
-                                hor_accuracy_man)) %>%
+                                hor_accuracy_man),
+        humus_form = coalesce(humus_form,
+                              humus_form1,
+                              humus_form2)) %>%
       select(-hor_accuracy_aut, -hor_accuracy_man) %>%
+      # GlobalID should not have curly brackets and capital letters
+      # To make the link with the identification_df
+      mutate(globalid = str_remove_all(globalid, "[\\{\\}]") %>%
+               str_to_lower()) %>%
       mutate(survey_date = as.Date(parse_date(date_time)),
+             survey_month = as.integer(format(survey_date, "%M")),
              survey_year = as.integer(format(survey_date, "%Y"))) %>%
       mutate(across(c(
         plot_id, site_id, res_id_inst, surface_frame, latitude, longitude,
@@ -188,9 +204,10 @@ get_app_data <- function(path = NULL) {
   # eDNA samples that were collected by NW-FVA (after their freezer broke down)
 
 
-  # PIR (inconsistency) ----
+  # INCONSISTENCY 1 ----
 
   rule <- "Data expected to be numeric should be numeric."
+  rule_id <- "1"
 
   name_export <- "inconsistencies_app_numeric"
 
@@ -211,6 +228,7 @@ get_app_data <- function(path = NULL) {
 
   # Dataframe to collect problems
   inconsistencies_app_numeric <- data.frame(
+    source = character(0),
     team = character(0),
     plot_code_app = character(0),
     res_id_inst = character(0),
@@ -218,7 +236,9 @@ get_app_data <- function(path = NULL) {
     parameter = character(0),
     sample_code = character(0),
     value = character(0),
-    inconsistency_reason = character(0))
+    inconsistency_reason = character(0),
+    unique_inconsistency = logical(0),
+    rule_id = character(0))
 
   # Loop through rows and columns
   for (i in seq_len(nrow(app_data))) {
@@ -243,6 +263,7 @@ get_app_data <- function(path = NULL) {
         if (!is.null(result)) {
           inconsistencies_app_numeric <-
             rbind(inconsistencies_app_numeric, data.frame(
+              source = "Survey123 app",
               team = app_data$institute[i],
               plot_code_app = app_data$code[i],
               res_id_inst = app_data$res_id_inst[i],
@@ -251,8 +272,8 @@ get_app_data <- function(path = NULL) {
               parameter = col,
               value = val,
               inconsistency_reason = rule,
-              stringsAsFactors = FALSE
-            ))
+              unique_inconsistency = TRUE,
+              rule_id = rule_id))
         }
       }
     }
@@ -265,7 +286,7 @@ get_app_data <- function(path = NULL) {
               by = join_by("parameter" == "column_name")) %>%
     relocate(parameter_description, parameter_unit, .after = parameter)
 
-  assign(name_export, inconsistencies_app_numeric)
+  assign(name_export, inconsistencies_app_numeric, envir = .GlobalEnv)
   cat(paste0("Object '", name_export, "' is imported in global environment.\n"))
 
 
@@ -314,11 +335,7 @@ get_app_data <- function(path = NULL) {
     empty_cols <- names(app_data)[colSums(!is.na(app_data)) == 0]
 
     app_data <- app_data %>%
-      select(-any_of(empty_cols)) %>%
-      # GlobalID should not have curly brackets and capital letters
-      # To make the link with the identification_df
-      mutate(globalid = str_remove_all(globalid, "[\\{\\}]") %>%
-               str_to_lower())
+      select(-any_of(empty_cols))
 
 
 
@@ -346,10 +363,26 @@ get_app_data <- function(path = NULL) {
         res_id_harmonized,
         site_id_harmonized,
         plot_id_harmonized,
-        sep = "__")) %>%
+        sep = "__"),
+      # Simple version of a plot code (unique code per plot across WILDCARD)
+      # by taking composed_site_id and only adding the plot_id for
+      # Bialowieza
+      plot_code_simple = ifelse(
+        composed_site_id == "WULS__1__Bialowieza National Park__NA",
+        case_when(
+          grepl("Transect V$", plot_id, ignore.case = TRUE) ~
+            paste(composed_site_id, "Transect V", sep = "_"),
+          grepl("Transect IV$", plot_id, ignore.case = TRUE) ~
+            paste(composed_site_id, "Transect IV", sep = "_"),
+          grepl("Transect III$", plot_id, ignore.case = TRUE) ~
+            paste(composed_site_id, "Transect III", sep = "_"),
+          grepl("Transect II$", plot_id, ignore.case = TRUE) ~
+            paste(composed_site_id, "Transect II", sep = "_")),
+        composed_site_id)) %>%
     relocate(
       composed_site_id,
       plot_code,
+      plot_code_simple,
       wp,
       team_harmonized,
       res_id_harmonized,
