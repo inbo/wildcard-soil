@@ -42,11 +42,18 @@ source("./data/sensitive_metadata/google_drive_links.R")
 
 # Date of last sample registration
 # (samples that arrived after this will be filtered for)
-date_last_reg <- parsedate::parse_date("2025-08-01")
+date_last_reg <- parsedate::parse_date("2025-08-15")
+
+# Indicate whether an RF is available already
+rf_avail <- TRUE
 
 
+# HIS
 
-
+if (!exists("his", envir = globalenv())) {
+  source("./src/functions/get_his.R")
+  his <- get_his()
+}
 
 # Get sample_lists ----
 
@@ -186,9 +193,12 @@ s_dist_full <- samples %>%
   filter(shipment_type == "normal") %>%
   filter(grepl("carbon", sample_code_harm)) %>%
   filter(arrival_date_inbo > date_last_reg) %>%
+  # TO DO! Make sure this can be uniquely linked based on composed_site_id
+  # since plot_id is too unreliable...
   left_join(his_ids %>%
-              select(plot_code, id_sample_pretreatment),
-            by = join_by("plot_code_harm" == "plot_code"))
+              select(composed_site_id, id_sample_pretreatment), #plot_code
+            by = join_by("composed_site_id"))
+            # by = join_by("plot_code_harm" == "plot_code"))
 
 assertthat::assert_that(all(!is.na(s_dist_full$id_sample_pretreatment)))
 
@@ -213,214 +223,223 @@ glimpse(s_dist_full)
 
 # 3. RF ----
 
-source("./src/functions/get_rf.R")
-# Loads the rf_overview table to the Global Environment.
-
-# Filters for the RFs you will need, considering the institutes that have
-# sent samples since the last update of the registration forms.
-
-rf_overview_sel <- get("rf_overview") %>%
-  filter(
-    mapply(
-      function(p) any(grepl(p, unique(s_dist_full$institute_sampling))),
-      partners))
+if (rf_avail == TRUE) {
 
 
+  source("./src/functions/get_rf.R")
+  # Loads the rf_overview table to the Global Environment.
 
-# Extract some metadata from the Survey123 app and HIS metadata
-# in order to fill in in the RFs
+  # Filters for the RFs you will need, considering the institutes that have
+  # sent samples since the last update of the registration forms.
 
-metadata_rf <- s_dist_full %>%
-  distinct(plot_code_harm, composed_site_id) %>%
-  left_join(
-    app_data %>%
-      mutate(
-        # Calculate the average of the OFH thickness
-        # (replacing any NAs by 0)
-        ofh_thickness = round(rowMeans(
-          across(matches("^P[1-5]_OFH_thickness$"), ~replace_na(., 0))),
-          1)) %>%
-      rowwise() %>%
-      mutate(
-        bedrock_vals = list(c_across(matches("^P[1-5]_depth_bedrock$"))),
-        n_filled = sum(!is.na(bedrock_vals)),
-        all_shallow = all(bedrock_vals[!is.na(bedrock_vals)] <= 30),
-        n_missing = sum(is.na(bedrock_vals)),
-        flag_suspicious = n_filled >= 3 & all_shallow & n_missing > 0,
-
-        depth_bedrock = if (flag_suspicious) {
-          round(mean(bedrock_vals, na.rm = TRUE))  # ignore NAs
-        } else {
-          round(mean(replace_na(bedrock_vals, 100)))  # assume 100 if NA
-        }
-      ) %>%
-      ungroup() %>%
-      select(plot_code, latitude, longitude, ofh_thickness,
-             depth_bedrock, date_time),
-    by = join_by("plot_code_harm" == "plot_code")) %>%
-  left_join(
-    his %>%
-      select(plot_code, latitude, longitude,
-             -composed_site_id) %>%
-      rename(latitude_his = latitude,
-             longitude_his = longitude),
-    by = join_by("plot_code_harm" == "plot_code")) %>%
-  mutate(
-    latitude = coalesce(latitude, latitude_his),
-    longitude = coalesce(longitude, longitude_his))
-
-glimpse(metadata_rf)
-
-if (any(is.na(metadata_rf$ofh_thickness))) {
-
-  cat(paste0("Best to remind VUK to update the Survey123 app data, ",
-             "since incomplete for the latest batch of samples that ",
-             "arrived.\n"))
-}
+  rf_overview_sel <- get("rf_overview") %>%
+    filter(
+      mapply(
+        function(p) any(grepl(p, unique(s_dist_full$institute_sampling))),
+        partners))
 
 
-# Prepare a table with samples for the RFs following the RF template
 
-s_rf <- s_dist_full %>%
-  left_join(
-    metadata_rf %>%
-      select(-composed_site_id),
-    by = "plot_code_harm") %>%
-  left_join(
-    overview_partners %>%
-      filter(grepl("WP2", partnerType)) %>%
-      select(partner, MTA_type),
-    by = join_by("institute_sampling" == "partner")) %>%
-  rowwise() %>%
-  mutate(
-    veld_id = sample_id_harm,
-    datum_bemonstering = coalesce(
-      as.Date(date_time),
-      as.Date(date_survey)),
-    monsternemer = institute_sampling,
-    archiefstaal = case_when(
-      MTA_type %in% c("MTA2", "not needed") ~ "Ja",
-      MTA_type %in% c("MTA1") ~ "Nee",
-      # VUK wants their WP2 samples to be sent back to them, so probably
-      # not needed to put them in the soil archive?
-      MTA_type %in% c("MTA5") ~ "Nee"),
-    toponym = reserve_name,
-    # RFs are using commas as decimal separators
-    wgs84lat = gsub("\\.", ",", as.character(round(latitude, 5))),
-    wgs84lon = gsub("\\.", ",", as.character(round(longitude, 5))),
-    diepte_monster = case_when(
-      grepl("OFH", sample_code_harm) ~ paste0("-", ofh_thickness, "-0"),
-      grepl("M01", sample_code_harm) ~
-        ifelse(!is.na(depth_bedrock),
-               paste0("0-", as.character(min(c(10, depth_bedrock)))),
-               "0-10"),
-      grepl("M13", sample_code_harm) ~
-        ifelse(!is.na(depth_bedrock),
-               paste0("10-", as.character(min(c(30, depth_bedrock)))),
-               "10-30"),
-      grepl("M36", sample_code_harm) ~
-        ifelse(!is.na(depth_bedrock),
-               paste0("30-", as.character(min(c(60, depth_bedrock)))),
-               "30-60"),
-      grepl("M61", sample_code_harm) ~
-        ifelse(!is.na(depth_bedrock),
-               paste0("60-", as.character(min(c(100, depth_bedrock)))),
-               "60-100")),
-    # To paste on tab "LABELFORMULIER" column J ("Archief_ID")
-    archief_id = paste(
-      coalesce(res_id_inst_harm, as.character(res_id_inst)),
-      coalesce(sub_id_harm, as.character(sub_id)),
-      coalesce(plot_id_harm,
-               "NA"),
-      sep = "__")) %>%
-  ungroup() %>%
-  select(
-    sample_code_harm,
-    veld_id, datum_bemonstering, monsternemer,
-    archiefstaal, toponym, wgs84lat, wgs84lon,
-    diepte_monster, archief_id)
+  # Extract some metadata from the Survey123 app and HIS metadata
+  # in order to fill in in the RFs
 
-glimpse(s_rf)
+  metadata_rf <- s_dist_full %>%
+    distinct(plot_code_harm, composed_site_id) %>%
+    left_join(
+      app_data %>%
+        mutate(
+          # Calculate the average of the OFH thickness
+          # (replacing any NAs by 0)
+          ofh_thickness = round(rowMeans(
+            across(matches("^P[1-5]_OFH_thickness$"), ~replace_na(., 0))),
+            1)) %>%
+        rowwise() %>%
+        mutate(
+          bedrock_vals = list(c_across(matches("^P[1-5]_depth_bedrock$"))),
+          n_filled = sum(!is.na(bedrock_vals)),
+          all_shallow = all(bedrock_vals[!is.na(bedrock_vals)] <= 30),
+          n_missing = sum(is.na(bedrock_vals)),
+          flag_suspicious = n_filled >= 3 & all_shallow & n_missing > 0,
 
-# To DO: accent zetten bij dieptes zodat het geen datum wordt?
+          depth_bedrock = if (flag_suspicious) {
+            round(mean(bedrock_vals, na.rm = TRUE))  # ignore NAs
+          } else {
+            round(mean(replace_na(bedrock_vals, 100)))  # assume 100 if NA
+          }
+        ) %>%
+        ungroup() %>%
+        select(plot_code, latitude, longitude, ofh_thickness,
+               depth_bedrock, date_time),
+      by = join_by("plot_code_harm" == "plot_code")) %>%
+    left_join(
+      his %>%
+        select(plot_code, latitude, longitude,
+               -composed_site_id) %>%
+        rename(latitude_his = latitude,
+               longitude_his = longitude),
+      by = join_by("plot_code_harm" == "plot_code")) %>%
+    mutate(
+      latitude = coalesce(latitude, latitude_his),
+      longitude = coalesce(longitude, longitude_his))
+
+  glimpse(metadata_rf)
+
+  if (any(is.na(metadata_rf$ofh_thickness))) {
+
+    cat(paste0("Best to remind VUK to update the Survey123 app data, ",
+               "since incomplete for the latest batch of samples that ",
+               "arrived.\n"))
+  }
 
 
-## 3.1. Mineral ----
+  # Prepare a table with samples for the RFs following the RF template
 
-s_rf_mineral <- s_rf %>%
-  filter(grepl("M01|M13|M36|M61", sample_code_harm)) %>%
-  select(-sample_code_harm)
+  s_rf <- s_dist_full %>%
+    left_join(
+      metadata_rf %>%
+        select(-composed_site_id),
+      by = "plot_code_harm") %>%
+    left_join(
+      overview_partners %>%
+        filter(grepl("WP2", partnerType)) %>%
+        select(partner, MTA_type),
+      by = join_by("institute_sampling" == "partner")) %>%
+    rowwise() %>%
+    mutate(
+      veld_id = sample_id_harm,
+      datum_bemonstering = coalesce(
+        as.Date(date_time),
+        as.Date(date_survey)),
+      monsternemer = institute_sampling,
+      archiefstaal = case_when(
+        MTA_type %in% c("MTA2", "not needed") ~ "Ja",
+        MTA_type %in% c("MTA1") ~ "Nee",
+        # VUK wants their WP2 samples to be sent back to them, so probably
+        # not needed to put them in the soil archive?
+        MTA_type %in% c("MTA5") ~ "Nee"),
+      toponym = reserve_name,
+      # RFs are using commas as decimal separators
+      wgs84lat = gsub("\\.", ",", as.character(round(latitude, 5))),
+      wgs84lon = gsub("\\.", ",", as.character(round(longitude, 5))),
+      diepte_monster = case_when(
+        grepl("OFH", sample_code_harm) ~ paste0("-", ofh_thickness, "-0"),
+        grepl("M01", sample_code_harm) ~
+          ifelse(!is.na(depth_bedrock),
+                 paste0("0-", as.character(min(c(10, depth_bedrock)))),
+                 "0-10"),
+        grepl("M13", sample_code_harm) ~
+          ifelse(!is.na(depth_bedrock),
+                 paste0("10-", as.character(min(c(30, depth_bedrock)))),
+                 "10-30"),
+        grepl("M36", sample_code_harm) ~
+          ifelse(!is.na(depth_bedrock),
+                 paste0("30-", as.character(min(c(60, depth_bedrock)))),
+                 "30-60"),
+        grepl("M61", sample_code_harm) ~
+          ifelse(!is.na(depth_bedrock),
+                 paste0("60-", as.character(min(c(100, depth_bedrock)))),
+                 "60-100")),
+      # To paste on tab "LABELFORMULIER" column J ("Archief_ID")
+      archief_id = paste(
+        coalesce(res_id_inst_harm, as.character(res_id_inst)),
+        coalesce(sub_id_harm, as.character(sub_id)),
+        coalesce(plot_id_harm,
+                 "NA"),
+        sep = "__")) %>%
+    ungroup() %>%
+    select(
+      sample_code_harm,
+      veld_id, datum_bemonstering, monsternemer,
+      archiefstaal, toponym, wgs84lat, wgs84lon,
+      diepte_monster, archief_id)
 
-cat(paste0("Paste the data in the following RF (mineral samples):\n",
-           rf_overview_sel %>%
-             filter(samples != "OFH") %>%
-             pull(rf)))
+  glimpse(s_rf)
 
 
-# Tab "STAALFORMULIER": Firstly paste (ctrl V) this in column E
 
-write.table(s_rf_mineral %>%
-              select(veld_id),
-            "clipboard", sep = "\t",
-            row.names = FALSE, col.names = FALSE)
-
-
-# Tab "STAALFORMULIER": Then paste (crtl V) this in columns Q-W
-
-write.table(s_rf_mineral %>%
-              select(-veld_id, -archief_id),
-            "clipboard", sep = "\t",
-            row.names = FALSE, col.names = FALSE)
-
-# Tab "LABELFORMULIER": Finally paste (ctrl V) this in column J
-
-write.table(s_rf_mineral %>%
-              select(archief_id),
-            "clipboard", sep = "\t",
-            row.names = FALSE, col.names = FALSE)
+  # To DO: accent zetten bij dieptes zodat het geen datum wordt?
 
 
 
 
 
+  ## 3.1. Mineral ----
+
+  s_rf_mineral <- s_rf %>%
+    filter(grepl("M01|M13|M36|M61", sample_code_harm)) %>%
+    select(-sample_code_harm)
+
+  cat(paste0("Paste the data in the following RF (mineral samples):\n",
+             rf_overview_sel %>%
+               filter(samples != "OFH") %>%
+               pull(rf)))
+
+
+  # Tab "STAALFORMULIER": Firstly paste (ctrl V) this in column E
+
+  write.table(s_rf_mineral %>%
+                select(veld_id),
+              "clipboard", sep = "\t",
+              row.names = FALSE, col.names = FALSE)
+
+
+  # Tab "STAALFORMULIER": Then paste (crtl V) this in columns Q-W
+
+  write.table(s_rf_mineral %>%
+                select(-veld_id, -archief_id),
+              "clipboard", sep = "\t",
+              row.names = FALSE, col.names = FALSE)
+
+  # Tab "LABELFORMULIER": Finally paste (ctrl V) this in column J
+
+  write.table(s_rf_mineral %>%
+                select(archief_id),
+              "clipboard", sep = "\t",
+              row.names = FALSE, col.names = FALSE)
 
 
 
-## 3.2. OFH ----
-
-s_rf_ofh <- s_rf %>%
-  filter(grepl("OFH", sample_code_harm)) %>%
-  select(-sample_code_harm)
-
-cat(paste0("Paste the data in the following RF (OFH samples):\n",
-           rf_overview_sel %>%
-             filter(samples == "OFH") %>%
-             pull(rf)))
 
 
-# Tab "STAALFORMULIER": Firstly paste (ctrl V) this in column E
-
-write.table(s_rf_ofh %>%
-              select(veld_id),
-            "clipboard", sep = "\t",
-            row.names = FALSE, col.names = FALSE)
 
 
-# Tab "STAALFORMULIER": Then paste (crtl V) this in columns Q-W
 
-write.table(s_rf_ofh %>%
-              select(-veld_id, -archief_id),
-            "clipboard", sep = "\t",
-            row.names = FALSE, col.names = FALSE)
+  ## 3.2. OFH ----
 
-# Tab "LABELFORMULIER": Finally paste (ctrl V) this in column J
+  s_rf_ofh <- s_rf %>%
+    filter(grepl("OFH", sample_code_harm)) %>%
+    select(-sample_code_harm)
 
-write.table(s_rf_ofh %>%
-              select(archief_id),
-            "clipboard", sep = "\t",
-            row.names = FALSE, col.names = FALSE)
+  cat(paste0("Paste the data in the following RF (OFH samples):\n",
+             rf_overview_sel %>%
+               filter(samples == "OFH") %>%
+               pull(rf)))
 
 
+  # Tab "STAALFORMULIER": Firstly paste (ctrl V) this in column E
+
+  write.table(s_rf_ofh %>%
+                select(veld_id),
+              "clipboard", sep = "\t",
+              row.names = FALSE, col.names = FALSE)
+
+
+  # Tab "STAALFORMULIER": Then paste (crtl V) this in columns Q-W
+
+  write.table(s_rf_ofh %>%
+                select(-veld_id, -archief_id),
+              "clipboard", sep = "\t",
+              row.names = FALSE, col.names = FALSE)
+
+  # Tab "LABELFORMULIER": Finally paste (ctrl V) this in column J
+
+  write.table(s_rf_ofh %>%
+                select(archief_id),
+              "clipboard", sep = "\t",
+              row.names = FALSE, col.names = FALSE)
+
+
+} # End of "if rf_avail == TRUE"
 
 
 
@@ -435,21 +454,37 @@ write.table(s_rf_ofh %>%
 ## 4.1. WBL disturbed ----
 
 
-# Get the information you just filled in in the RFs, since the IDs are needed
+if (rf_avail == TRUE) {
 
-source("./src/functions/get_rf.R")
-rf_all <- get_rf()
-glimpse(rf_all)
+  # Get the information you just filled in in the RFs, since the IDs are needed
+
+  source("./src/functions/get_rf.R")
+  rf_all <- get_rf()
+  glimpse(rf_all)
+
+  s_dist <- s_dist_full %>%
+    left_join(
+      rf_all %>%
+        select(lims_project_code, lims_sample_id, sample_id),
+      by = join_by("sample_id_harm" == "sample_id"))
+
+}
+
+if (rf_avail == FALSE) {
+
+  s_dist <- s_dist_full %>%
+    mutate(
+      lims_project_code = "",
+      lims_sample_id = "")
+
+}
 
 
-
-
-
-s_dist <- s_dist_full %>%
-  left_join(
-    rf_all %>%
-      select(lims_project_code, lims_sample_id, sample_id),
-    by = join_by("sample_id_harm" == "sample_id")) %>%
+s_dist <- s_dist %>%
+  # left_join(
+  #   rf_all %>%
+  #     select(lims_project_code, lims_sample_id, sample_id),
+  #   by = join_by("sample_id_harm" == "sample_id")) %>%
   left_join(
     overview_partners %>%
       select(partner, MTA_type),
@@ -498,9 +533,13 @@ s_undist_full <- samples %>%
   filter(shipment_type == "normal") %>%
   filter(grepl("Bulk", sample_code_harm)) %>%
   filter(arrival_date_inbo > date_last_reg) %>%
+  # TO DO! Make sure this can be uniquely linked based on composed_site_id
+  # since plot_id is too unreliable...
   left_join(his_ids %>%
-              select(plot_code, id_sample_pretreatment),
-            by = join_by("plot_code_harm" == "plot_code"))
+              select(composed_site_id, id_sample_pretreatment), #plot_code
+            by = join_by("composed_site_id"))
+# by = join_by("plot_code_harm" == "plot_code"))
+
 
 assertthat::assert_that(all(!is.na(s_undist_full$id_sample_pretreatment)))
 
