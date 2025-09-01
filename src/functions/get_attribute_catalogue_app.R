@@ -4,6 +4,10 @@ get_attribute_catalogue_app <- function() {
   # Useful for the inconsistency report for the partners
   # Largely based on "DATABASE OF SOIL SAMPLING PROTOCOL.docx" by VUK
 
+  stopifnot(require("purrr"),
+            require("glue"))
+
+
   # For now, I just included numeric columns
 
   # Step 1: Manually specified attributes
@@ -33,8 +37,9 @@ get_attribute_catalogue_app <- function() {
   # Column names from Survey123 app output
 
   col_names <- c(
-    "objectid", "globalid", "logo", "date_time", "country", "team", "region", "site_id", "plot_id", "code",
-    "coordinates", "hor_accuracy_aut", "latitude", "longitude", "hor_accuracy_man", "vol_ring", "bulk_den_fraction_prof",
+    "objectid", "globalid", "logo", "date_time", "country", "team", "region",
+    "site_id", "plot_id", "code", "coordinates", "hor_accuracy_aut",
+    "latitude", "longitude", "hor_accuracy_man", "vol_ring", "bulk_den_fraction_prof",
     "actual_weather", "past_weather", "soil_condition", "soil_dist", "depth_cultivation_cm", "other_remarks", "macrorelief",
     "moisture", "slope_type", "slope_deg", "scheme_square", "scheme_triangl", "scheme", "azimuth", "direct_photo_1",
     "direct_photo_2", "direct_photo_3", "direct_photo_4", "num_photo_humus", "P1_humus_form", "P1_ol_thickness",
@@ -42,19 +47,20 @@ get_attribute_catalogue_app <- function() {
     "suppl_q_RG", "P1_m01coaf_2mm", "P1_m01coaf_50mm", "P1_m01coaf_lab", "P1_m13coaf_2mm", "P1_m13coaf_50mm",
     "P1_m13coaf_lab", "P1_m36coaf_2mm", "P1_m36coaf_50mm", "P1_m36coaf_lab", "P1_m61coaf_2mm", "P1_m61coaf_50mm",
     "P1_m61coaf_lab", "P1_other_remarks_fragment", "P1_m01dist", "P1_m13dist", "P1_m36dist", "P1_m61dist",
-    "P1_depth_bedrock", "P1_notes_dist_samples", "P1_bulk_density", "P1_reason_bulk_den", "P1_notes_bulk_den",
+    "P1_depth_bedrock", "P1_notes_dist_samples", "P1_bulk_density", "P1_bulk_density_lyr", "P1_reason_bulk_den",
+    "P1_notes_bulk_den", "P1_num_M36_undist_samples", "P1_num_M61_undist_samples",
     "P2_expected_pos", "P2_describe_pos", "P2_humus_form", "P2_ol_thickness", "P2_ol_tamass", "P2_ofh_thickness",
     "P2_ofh_tamass", "P2_remarks_fofloor_sample", "P2_m01dist", "P2_m13dist", "P2_m36dist", "P2_m61dist",
-    "P2_depth_bedrock", "P2_notes_dist_samples", "P2_bulk_density", "P2_reason_bulk_den", "P2_notes_bulk_den",
+    "P2_depth_bedrock", "P2_notes_dist_samples", "P2_bulk_density", "P2_bulk_density_lyr", "P2_reason_bulk_den", "P2_notes_bulk_den",
     "P3_expected_pos", "P3_describe_pos", "P3_humus_form", "P3_ol_thickness", "P3_ol_tamass", "P3_ofh_thickness",
     "P3_ofh_tamass", "P3_remarks_fofloor_sample", "P3_m01dist", "P3_m13dist", "P3_m36dist", "P3_m61dist",
-    "P3_depth_bedrock", "P3_notes_dist_samples", "P3_bulk_density", "P3_reason_bulk_den", "P3_notes_bulk_den",
+    "P3_depth_bedrock", "P3_notes_dist_samples", "P3_bulk_density", "P3_bulk_density_lyr", "P3_reason_bulk_den", "P3_notes_bulk_den",
     "P4_expected_pos", "P4_describe_pos", "P4_humus_form", "P4_ol_thickness", "P4_ol_tamass", "P4_ofh_thickness",
     "P4_ofh_tamass", "P4_remarks_fofloor_sample", "P4_m01dist", "P4_m13dist", "P4_m36dist", "P4_m61dist",
-    "P4_depth_bedrock", "P4_notes_dist_samples", "P4_bulk_density", "P4_reason_bulk_den", "P4_notes_bulk_den",
+    "P4_depth_bedrock", "P4_notes_dist_samples", "P4_bulk_density", "P4_bulk_density_lyr", "P4_reason_bulk_den", "P4_notes_bulk_den",
     "P5_expected_pos", "P5_describe_pos", "P5_humus_form", "P5_ol_thickness", "P5_ol_tamass", "P5_ofh_thickness",
     "P5_ofh_tamass", "P5_remarks_fofloor_sample", "P5_m01dist", "P5_m13dist", "P5_m36dist", "P5_m61dist",
-    "P5_depth_bedrock", "P5_notes_dist_samples", "P5_bulk_density", "P5_reason_bulk_den", "P5_notes_bulk_den",
+    "P5_depth_bedrock", "P5_notes_dist_samples", "P5_bulk_density", "P5_bulk_density_lyr", "P5_reason_bulk_den", "P5_notes_bulk_den",
     "P6_expected_pos", "P6_describe_pos", "P6_humus_form", "P6_ol_thickness", "P6_ofh_thickness", "P6_remarks_fofloor_sample",
     "P6_m01dist", "P6_m13dist", "P6_depth_bedrock", "P6_notes_dist_samples", "P7_expected_pos", "P7_describe_pos",
     "P7_humus_form", "P7_ol_thickness", "P7_ofh_thickness", "P7_remarks_fofloor_sample", "P7_m01dist", "P7_m13dist",
@@ -78,14 +84,6 @@ get_attribute_catalogue_app <- function() {
 
   # Helper to create entries
   make_entry <- function(col, descr, unit) {
-    tibble::tibble(column_name = col, descr = descr, unit = unit)
-  }
-
-  library(tibble)
-  library(purrr)
-  library(glue)
-
-  make_entry <- function(col, descr, unit) {
     tibble(column_name = col, descr = descr, unit = unit)
   }
 
@@ -105,13 +103,13 @@ get_attribute_catalogue_app <- function() {
     } else if (grepl("coaf_2mm$", col)) {
       make_entry(
         col,
-        glue("Volumetric percentage of coarse fragments >2 mm in layer {sub('.*_m(.*)coaf_2mm$', '\\\\1', col)}"),
+        glue("Volumetric percentage of coarse fragments >2 mm in layer {sub('.*_(m.*)coaf_2mm$', '\\\\1', col)}"),
         "%"
       )
     } else if (grepl("coaf_50mm$", col)) {
       make_entry(
         col,
-        glue("Volumetric percentage of coarse fragments >50 mm in layer {sub('.*_m(.*)coaf_50mm$', '\\\\1', col)}"),
+        glue("Volumetric percentage of coarse fragments >50 mm in layer {sub('.*_(m.*)coaf_50mm$', '\\\\1', col)}"),
         "%"
       )
     } else if (grepl("_depth_bedrock$", col)) {
@@ -149,6 +147,18 @@ get_attribute_catalogue_app <- function() {
         col,
         glue("Net mass of the undisturbed field-moist samples from layer {sub('_bulk_den$', '', col)} for bulk density assessment"),
         "g"
+      )
+    } else if (grepl("_bulk_density_lyr$", col)) {
+      make_entry(
+        col,
+        glue("Layers at which undisturbed samples (e.g., Kopecky rings) could be taken at sampling point {sub('(_.*)$', '', col)}"),
+        "-"
+      )
+    } else if (grepl("^P1_num_M", col) & grepl("_undist_samples$", col)) {
+      make_entry(
+        col,
+        glue("Number of undisturbed samples (e.g., Kopecky rings) taken in the pit in sampling point P1 for layer {sub('.*_(M[0-9]+)_.*', '\\\\1', col)}"),
+        "-"
       )
     } else {
       # If no pattern matches, return nothing

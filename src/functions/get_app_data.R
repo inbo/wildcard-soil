@@ -153,7 +153,9 @@ get_app_data <- function(path = NULL) {
         else humus_form1,
         humus_form2 =
           if (!"humus_form2" %in% names(.)) NA_character_
-        else humus_form2) %>%
+        else humus_form2,
+        surface_frame =
+          if (!"surface_frame" %in% names(.)) .0625 else surface_frame) %>%
       # UTC time zone (Coordinated Universal Time)
       mutate(
         date_time =

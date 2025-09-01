@@ -28,11 +28,8 @@ stopifnot(require("tidyverse"),
 source("./data/sensitive_metadata/google_drive_links.R")
 
 
-# Get sample_lists
 
-source("./src/functions/get_sample_lists.R")
-
-samples <- get_sample_lists()
+# 2. Get data ----
 
 # Get site metadata
 
@@ -64,29 +61,28 @@ write.table(wp3_sites,
 # Data Survey123 app
 
 source("./src/functions/get_app_data.R")
-app_data <- get_app_data()
+app_data_wide <- get_app_data()
 
+
+
+# Get sample_lists
+
+source("./src/functions/get_sample_lists.R")
+
+samples <- get_sample_lists()
 
 
 # PIR: Compare sample list with app
 # PIR: check distance from HIS metadata table coordinates
 # PIR: coordinates should not be 0
 
+# PIR: double-check rows for which tamass is NA (simply no forest floor?)
+# (using tamass_max)
+
 
 
 # PIR: a few bedrock depths forgotten?
 
-app_data %>%
-  rowwise() %>%
-  mutate(
-    bedrock_vals = c_across(matches("^P[1-5]_depth_bedrock$")),
-    n_filled = sum(!is.na(bedrock_vals)),
-    all_shallow = all(bedrock_vals[!is.na(bedrock_vals)] <= 20),
-    n_missing = sum(is.na(bedrock_vals)),
-    flag_suspicious = n_filled >= 2 & all_shallow & n_missing > 0
-  ) %>%
-  ungroup() %>%
-  select(-bedrock_vals, -n_filled, -all_shallow, -n_missing)
 
 
 
@@ -96,8 +92,7 @@ app_data %>%
 
 
 
-
-
+# calculate coarse fragments etc
 
 
 
@@ -144,7 +139,28 @@ df_rings <- app_data %>%
 
 
 
+# Compile inconsistencies ----
 
+inc_files <- c(
+  # INCONSISTENCY 1
+  # "Data expected to be numeric should be numeric."
+  # get_app_data()
+  "inconsistencies_app_numeric",
+  # INCONSISTENCY 2
+  # "Forest floor mass should be plausible in comparison with thickness
+  #  and surface area frame"
+  # app_data_long()
+  # INCONSISTENCY 4
+  # "Undisturbed mass should be plausible in comparison with
+  #  number and volume of rings"
+  # app_data_long()
+  # INCONSISTENCY 5
+  # "Subsample forest floor for lab cannot weigh more than sum of
+  #  all reported forest floor masses across sampling points"
+  # app_data_long()
+  "inconsistencies_app_long"
+
+)
 
 
 
