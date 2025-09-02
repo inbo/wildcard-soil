@@ -65,7 +65,7 @@ get_lab_data <- function() {
         tic <- 0
       }
 
-      tic_harm = case_when(
+      tic_harm <- case_when(
         tic == 0 ~ 0,
         tic < loq_tic ~ 0.5 * loq_tic,
         TRUE ~ tic)
@@ -89,7 +89,7 @@ get_lab_data <- function() {
 
       assertthat::assert_that(!is.null(value))
 
-      value_harm = case_when(
+      value_harm <- case_when(
         value < loq_value ~ 0.5 * loq_value,
         TRUE ~ value)
 
@@ -224,12 +224,12 @@ get_lab_data <- function() {
         tic <- 0
       }
 
-      var_min = case_when(
+      var_min <- case_when(
         tic == 0 ~ 0,
         tic < loq_tic ~ 0,
         TRUE ~ max(c(tic - u_var, 0)))
 
-      var_max = case_when(
+      var_max <- case_when(
         tic == 0 ~ 0,
         tic < loq_tic ~ loq_tic,
         TRUE ~ min(c(tic + u_var, 1E3)))
@@ -251,11 +251,11 @@ get_lab_data <- function() {
 
       assertthat::assert_that(!is.null(value))
 
-      var_min = case_when(
+      var_min <- case_when(
         value < loq_value ~ 0,
         TRUE ~ max(c(value - u_var, 0)))
 
-      var_max = case_when(
+      var_max <- case_when(
         value < loq_value ~ loq_value,
         TRUE ~ min(c(value + u_var, 1E3)))
 
