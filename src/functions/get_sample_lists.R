@@ -116,7 +116,8 @@ get_sample_lists <- function() {
     # TO DO: for LWF, the sample list (normal shipment) contains two records
     # referring to the same sample (part 1 and part 2), i.e.,
     # "LWF__65_a__Friedergries__NA" OFH_carbon.
-    # Combine these into one record.
+    # Combine these into one record (if not done yet in the reviewed
+    # sample list).
 
 
     # Select and reorder columns
@@ -136,66 +137,12 @@ get_sample_lists <- function() {
         arrival_date_inbo =
           parsedate::parse_date(unlist(strsplit(file$name, "_"))[1]),
         shipment_type = unlist(strsplit(file$name, "_"))[3],
-        # Create column only if missing
-        # wp =
-        #   if (!"wp" %in% names(.)) NA_character_ else wp,
         wp = case_when(
           grepl("Extra samples", wp) ~ "WP2",
           !is.na(wp) ~ wp,
           shipment_type == "normal" ~ "WP2",
           TRUE ~ NA)) %>%
       relocate(wp, .after = sub_id)
-
-
-
-    df <- df %>%
-      separate_wider_delim(
-        composed_site_id,
-        delim = "__",
-        names = c("institute_harm", "res_id_inst_harm", "reserve_name",
-                  "sub_id_harm"),
-        too_few = "align_start",
-        cols_remove = FALSE
-      ) %>%
-      left_join(
-        bind_rows(his_plot_ids,
-                  wp3_plot_ids),
-        by = join_by("composed_site_id", "wp")) %>%
-      mutate(
-        plot_code_harm = paste(
-          coalesce(institute_harm, as.character(institute_origin)),
-          coalesce(res_id_inst_harm, as.character(res_id_inst)),
-          coalesce(sub_id_harm, as.character(sub_id)),
-          coalesce(plot_id_harm,
-                   "NA"),
-          sep = "__"),
-        sample_id_harm = paste(
-          country_code_harm,
-          coalesce(institute_harm, as.character(institute_origin)),
-          coalesce(res_id_inst_harm, as.character(res_id_inst)),
-          coalesce(sub_id_harm, as.character(sub_id)),
-          coalesce(plot_id_harm,
-                   "NA"),
-          sample_code_harm,
-          # Better to use "__" rather than "-" as in the Survey123 app
-          # since several entries contain a "-" already,
-          # and since we are making a new harmonised sample_id anyway...
-          sep = "__")) %>%
-      relocate(plot_code_harm, sample_id_harm, reserve_name,
-               .before = sample_id) %>%
-      mutate(
-        # Institute that does the soil sampling
-        institute_sampling = case_when(
-          institute_harm %in% c("BFNP_EXTRA", "NPS") ~ "BFNP",
-          institute_harm == "LWF" &
-            reserve_name == "Hoellbachgespreng" ~ "BFNP",
-          institute_harm == "DISAFA - UNITO" ~ "UNITO",
-          institute_harm == "FVA-BW" ~ "NWFVA",
-          institute_harm == "INCDS" ~ "UNITBV",
-          institute_harm %in% c("UNIUD/HSI", "UNIUD/HSI_EXTRA",
-                                "UNIUD_EXTRA") ~ "UNIUD",
-          institute_harm %in% c("URK", "WULS") ~ "IBL",
-          TRUE ~ institute_harm))
 
 
     return(df)
@@ -224,10 +171,75 @@ get_sample_lists <- function() {
   }
 
 
+  all_samples_final <- all_samples %>%
+    separate_wider_delim(
+      composed_site_id,
+      delim = "__",
+      names = c("institute_harm", "res_id_inst_harm", "reserve_name",
+                "sub_id_harm"),
+      too_few = "align_start",
+      cols_remove = FALSE
+    ) %>%
+    left_join(
+      bind_rows(his_plot_ids,
+                wp3_plot_ids),
+      by = join_by("composed_site_id", "wp")) %>%
+    mutate(
+      # Make sure that the transect of Bialowieza is mentioned in sample_id!
+      plot_code_simple = ifelse(
+        composed_site_id == "WULS__1__Bialowieza National Park__NA",
+        case_when(
+          grepl("Transect V$", sample_id, ignore.case = TRUE) ~
+            paste(composed_site_id, "Transect V", sep = "_"),
+          grepl("Transect IV$", sample_id, ignore.case = TRUE) ~
+            paste(composed_site_id, "Transect IV", sep = "_"),
+          grepl("Transect III$", sample_id, ignore.case = TRUE) ~
+            paste(composed_site_id, "Transect III", sep = "_"),
+          grepl("Transect II$", sample_id, ignore.case = TRUE) ~
+            paste(composed_site_id, "Transect II", sep = "_")),
+        composed_site_id)) %>%
+    mutate(
+      plot_code_harm = paste(
+        coalesce(institute_harm, as.character(institute_origin)),
+        coalesce(res_id_inst_harm, as.character(res_id_inst)),
+        coalesce(sub_id_harm, as.character(sub_id)),
+        coalesce(plot_id_harm,
+                 "NA"),
+        sep = "__"),
+      sample_id_harm = paste(
+        country_code_harm,
+        coalesce(institute_harm, as.character(institute_origin)),
+        coalesce(res_id_inst_harm, as.character(res_id_inst)),
+        coalesce(sub_id_harm, as.character(sub_id)),
+        coalesce(plot_id_harm,
+                 "NA"),
+        sample_code_harm,
+        # Better to use "__" rather than "-" as in the Survey123 app
+        # since several entries contain a "-" already,
+        # and since we are making a new harmonised sample_id anyway...
+        sep = "__")) %>%
+    relocate(plot_code_harm, sample_id_harm, reserve_name,
+             .before = sample_id) %>%
+    mutate(
+      # Institute that does the soil sampling
+      institute_sampling = case_when(
+        institute_harm %in% c("BFNP_EXTRA", "NPS") ~ "BFNP",
+        institute_harm == "LWF" &
+          reserve_name == "Hoellbachgespreng" ~ "BFNP",
+        institute_harm == "DISAFA - UNITO" ~ "UNITO",
+        institute_harm == "FVA-BW" ~ "NWFVA",
+        institute_harm == "INCDS" ~ "UNITBV",
+        institute_harm %in% c("UNIUD/HSI", "UNIUD/HSI_EXTRA",
+                              "UNIUD_EXTRA") ~ "UNIUD",
+        institute_harm %in% c("URK", "WULS") ~ "IBL",
+        TRUE ~ institute_harm))
 
 
 
-  return(all_samples)
+
+
+
+  return(all_samples_final)
 
 
 

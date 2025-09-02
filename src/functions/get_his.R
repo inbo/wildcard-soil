@@ -233,8 +233,21 @@ get_his <- function(include_extra_plots = TRUE,
         institute %in% c("UNIUD/HSI", "UNIUD/HSI_EXTRA",
                          "UNIUD_EXTRA") ~ "UNIUD",
         institute %in% c("URK", "WULS") ~ "IBL",
-        TRUE ~ institute)) %>%
-    relocate(institute_sampling, .after = institute)
+        TRUE ~ institute),
+      plot_code_simple = ifelse(
+        composed_site_id == "WULS__1__Bialowieza National Park__NA",
+        case_when(
+          grepl("Transect V$", plot_id, ignore.case = TRUE) ~
+            paste(composed_site_id, "Transect V", sep = "_"),
+          grepl("Transect IV$", plot_id, ignore.case = TRUE) ~
+            paste(composed_site_id, "Transect IV", sep = "_"),
+          grepl("Transect III$", plot_id, ignore.case = TRUE) ~
+            paste(composed_site_id, "Transect III", sep = "_"),
+          grepl("Transect II$", plot_id, ignore.case = TRUE) ~
+            paste(composed_site_id, "Transect II", sep = "_")),
+        composed_site_id)) %>%
+    relocate(institute_sampling, .after = institute) %>%
+    relocate(plot_code_simple, .after = plot_code)
 
 
   return(his)

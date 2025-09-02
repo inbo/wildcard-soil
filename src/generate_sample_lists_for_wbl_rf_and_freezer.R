@@ -70,7 +70,7 @@ glimpse(his_ids)
 # Data Survey123 app
 
 source("./src/functions/get_app_data.R")
-app_data <- get_app_data()
+app_data_wide <- get_app_data()
 
 # Get info about the MTA from the partner overview table
 
@@ -193,12 +193,27 @@ s_dist_full <- samples %>%
   filter(shipment_type == "normal") %>%
   filter(grepl("carbon", sample_code_harm)) %>%
   filter(arrival_date_inbo > date_last_reg) %>%
-  # TO DO! Make sure this can be uniquely linked based on composed_site_id
-  # since plot_id is too unreliable...
+  # In the end, we use plot_code_simple to join tables
+  # plot_code_simple is basically composed_site_id, with "Transect X"
+  # added to it for Bialowieza.
+  # (because plot_id changes while surveys are being submitted,
+  #  and is only important for Bialowieza's unique plot key)
   left_join(his_ids %>%
-              select(composed_site_id, id_sample_pretreatment), #plot_code
-            by = join_by("composed_site_id"))
-            # by = join_by("plot_code_harm" == "plot_code"))
+              mutate(
+                plot_code_simple = ifelse(
+                  composed_site_id == "WULS__1__Bialowieza National Park__NA",
+                  case_when(
+                    grepl("Transect V$", plot_id, ignore.case = TRUE) ~
+                      paste(composed_site_id, "Transect V", sep = "_"),
+                    grepl("Transect IV$", plot_id, ignore.case = TRUE) ~
+                      paste(composed_site_id, "Transect IV", sep = "_"),
+                    grepl("Transect III$", plot_id, ignore.case = TRUE) ~
+                      paste(composed_site_id, "Transect III", sep = "_"),
+                    grepl("Transect II$", plot_id, ignore.case = TRUE) ~
+                      paste(composed_site_id, "Transect II", sep = "_")),
+                  composed_site_id)) %>%
+              select(plot_code_simple, id_sample_pretreatment),
+            by = join_by("plot_code_simple"))
 
 assertthat::assert_that(all(!is.na(s_dist_full$id_sample_pretreatment)))
 
@@ -244,9 +259,9 @@ if (rf_avail == TRUE) {
   # in order to fill in in the RFs
 
   metadata_rf <- s_dist_full %>%
-    distinct(plot_code_harm, composed_site_id) %>%
+    distinct(plot_code_simple, composed_site_id) %>%
     left_join(
-      app_data %>%
+      app_data_wide %>%
         mutate(
           # Calculate the average of the OFH thickness
           # (replacing any NAs by 0)
@@ -268,16 +283,15 @@ if (rf_avail == TRUE) {
           }
         ) %>%
         ungroup() %>%
-        select(plot_code, latitude, longitude, ofh_thickness,
+        select(plot_code_simple, latitude, longitude, ofh_thickness,
                depth_bedrock, date_time),
-      by = join_by("plot_code_harm" == "plot_code")) %>%
+      by = "plot_code_simple") %>%
     left_join(
       his %>%
-        select(plot_code, latitude, longitude,
-               -composed_site_id) %>%
+        select(plot_code_simple, latitude, longitude) %>%
         rename(latitude_his = latitude,
                longitude_his = longitude),
-      by = join_by("plot_code_harm" == "plot_code")) %>%
+      by = "plot_code_simple") %>%
     mutate(
       latitude = coalesce(latitude, latitude_his),
       longitude = coalesce(longitude, longitude_his))
@@ -298,7 +312,7 @@ if (rf_avail == TRUE) {
     left_join(
       metadata_rf %>%
         select(-composed_site_id),
-      by = "plot_code_harm") %>%
+      by = "plot_code_simple") %>%
     left_join(
       overview_partners %>%
         filter(grepl("WP2", partnerType)) %>%
@@ -347,6 +361,9 @@ if (rf_avail == TRUE) {
                  "NA"),
         sep = "__")) %>%
     ungroup() %>%
+    # prepend a quote, so that Excel and Google Sheets will treat it this
+    # column as plain text instead of trying to interpret it as a date
+    mutate(diepte_monster = paste0("'", diepte_monster)) %>%
     select(
       sample_code_harm,
       veld_id, datum_bemonstering, monsternemer,
@@ -357,9 +374,9 @@ if (rf_avail == TRUE) {
 
 
 
-  # To DO: accent zetten bij dieptes zodat het geen datum wordt?
 
 
+  # Runnen tot hier en dan apart copy-pasten
 
 
 
@@ -481,10 +498,6 @@ if (rf_avail == FALSE) {
 
 
 s_dist <- s_dist %>%
-  # left_join(
-  #   rf_all %>%
-  #     select(lims_project_code, lims_sample_id, sample_id),
-  #   by = join_by("sample_id_harm" == "sample_id")) %>%
   left_join(
     overview_partners %>%
       select(partner, MTA_type),
@@ -533,12 +546,22 @@ s_undist_full <- samples %>%
   filter(shipment_type == "normal") %>%
   filter(grepl("Bulk", sample_code_harm)) %>%
   filter(arrival_date_inbo > date_last_reg) %>%
-  # TO DO! Make sure this can be uniquely linked based on composed_site_id
-  # since plot_id is too unreliable...
   left_join(his_ids %>%
-              select(composed_site_id, id_sample_pretreatment), #plot_code
-            by = join_by("composed_site_id"))
-# by = join_by("plot_code_harm" == "plot_code"))
+              mutate(
+                plot_code_simple = ifelse(
+                  composed_site_id == "WULS__1__Bialowieza National Park__NA",
+                  case_when(
+                    grepl("Transect V$", plot_id, ignore.case = TRUE) ~
+                      paste(composed_site_id, "Transect V", sep = "_"),
+                    grepl("Transect IV$", plot_id, ignore.case = TRUE) ~
+                      paste(composed_site_id, "Transect IV", sep = "_"),
+                    grepl("Transect III$", plot_id, ignore.case = TRUE) ~
+                      paste(composed_site_id, "Transect III", sep = "_"),
+                    grepl("Transect II$", plot_id, ignore.case = TRUE) ~
+                      paste(composed_site_id, "Transect II", sep = "_")),
+                  composed_site_id)) %>%
+              select(plot_code_simple, id_sample_pretreatment),
+            by = "plot_code_simple")
 
 
 assertthat::assert_that(all(!is.na(s_undist_full$id_sample_pretreatment)))
