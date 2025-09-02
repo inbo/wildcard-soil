@@ -39,20 +39,20 @@ show_sites_per_partner <- function(inst) {
   filtered_wp2 <- get("his") %>%
     filter(grepl(paste(inst, collapse = "|"), institute)) %>%
     arrange(institute, res_id_inst) %>%
-    select(composed_site_id,
-           res_id_inst,
+    select(res_id_inst,
            reserve_name,
-           sub_id)
+           sub_id,
+           composed_site_id)
 
   filtered_wp3 <- get("wp3_sites") %>%
     filter(grepl(paste(inst, collapse = "|"), institute)) %>%
     arrange(institute, region, site_id) %>%
     select(
-      composed_site_id,
       chronosequence_id,
       region,
       site_id,
-      plot_id)
+      plot_id,
+      composed_site_id)
 
   if (nrow(filtered_wp2) > 0) {
 
