@@ -85,7 +85,10 @@ get_app_data <- function(path = NULL) {
     # To make the link with the identification_df, remove curly brackets
     # and capital letters
     mutate(GlobalID = str_remove_all(GlobalID, "[\\{\\}]") %>%
-             str_to_lower())
+             str_to_lower()) %>%
+    filter(!is.na(GlobalID)) %>%
+    # Filter out test survey from INBO 2024
+    filter(!(team == "INBO" & grepl("2024", date_time)))
 
 
   # Import and combine the other files ----
@@ -118,7 +121,7 @@ get_app_data <- function(path = NULL) {
   app_files <- app_files[which(!app_files %in% files_to_exclude)]
 
 
-  app_data <- map_dfr(seq_along(app_files), function(i) {
+  app_data_wide <- map_dfr(seq_along(app_files), function(i) {
 
     suppressMessages(read_excel(app_files[i])) %>%
       rename(
@@ -221,12 +224,12 @@ get_app_data <- function(path = NULL) {
     "latitude", "longitude", "hor_accuracy",
     "surface_frame", "vol_ring", "air_temperature", "depth_cultivation_cm",
     "slope_deg",
-    grep("(_thickness$|_tamass$)", names(app_data), value = TRUE),
-    grep("(coaf_2mm$|coaf_50mm$|_depth_bedrock$)", names(app_data),
+    grep("(_thickness$|_tamass$)", names(app_data_wide), value = TRUE),
+    grep("(coaf_2mm$|coaf_50mm$|_depth_bedrock$)", names(app_data_wide),
          value = TRUE),
-    grep("(_flamm$|_carbon$)", names(app_data), value = TRUE),
+    grep("(_flamm$|_carbon$)", names(app_data_wide), value = TRUE),
     grep("(_eDNA1$|_eDNA2$|_edna1$|_edna2$|_back_up$|^m\\d{2}_bulk_den$)",
-         names(app_data), value = TRUE))
+         names(app_data_wide), value = TRUE))
 
   # Dataframe to collect problems
   inconsistencies_app_numeric <- data.frame(
@@ -243,9 +246,9 @@ get_app_data <- function(path = NULL) {
     rule_id = character(0))
 
   # Loop through rows and columns
-  for (i in seq_len(nrow(app_data))) {
+  for (i in seq_len(nrow(app_data_wide))) {
     for (col in columns_to_check) {
-      val <- app_data[[col]][i]
+      val <- app_data_wide[[col]][i]
 
       if (!is.na(val)) {
         # Convert comma decimal to dot
@@ -266,13 +269,13 @@ get_app_data <- function(path = NULL) {
           inconsistencies_app_numeric <-
             rbind(inconsistencies_app_numeric, data.frame(
               source = "Survey123 app",
-              team = app_data$institute[i],
-              plot_code_app = app_data$code[i],
-              res_id_inst = app_data$res_id_inst[i],
-              globalid = app_data$globalid[i],
+              team = app_data_wide$institute[i],
+              plot_code_app = app_data_wide$code[i],
+              res_id_inst = app_data_wide$res_id_inst[i],
+              globalid = app_data_wide$globalid[i],
               sample_code = NA,
               parameter = col,
-              value = val,
+              value = as.character(val),
               inconsistency_reason = rule,
               unique_inconsistency = TRUE,
               rule_id = rule_id))
@@ -298,7 +301,7 @@ get_app_data <- function(path = NULL) {
 
   layers <- c("OL", "OFH", "M01", "M13", "M36", "M61")
 
-  app_data <- app_data %>%
+  app_data_wide <- app_data_wide %>%
     select(-x, -y, ) %>%
     relocate(hor_accuracy, .after = longitude) %>%
     relocate(wrb_qualifier_1, wrb_qualifier_suppl,
@@ -306,7 +309,7 @@ get_app_data <- function(path = NULL) {
     # Manually fix one inconsistency that was detected on 2025-07-31
     # TO DO: update this with the correct value from the partner (WSL)
     # Or actually, better implement this earlier in this script (right after
-    # app_data is first imported)
+    # app_data_wide is first imported)
     mutate(
       P3_ofh_thickness = case_when(
         code == "CH-WSL-30-NA-KF 2" ~ "2",
@@ -322,21 +325,11 @@ get_app_data <- function(path = NULL) {
       matches("(_eDNA1$|_eDNA2$|_edna1$|_edna2$)"),
       matches("(_back_up$|^m\\d{2}_bulk_den$)")),
       ~ as.numeric(gsub(",", ".", .x))
-    )) %>%
-    # Make sure that all layer codes ("M01", "m01" etc) are capitalised
-    # (in the column names)
-    # (only column names starting with this code_layer or
-    # containing "_[code_layer]", i.e., "vol_ring" shouldn't be converted)
-    rename_with(
-      ~ str_replace_all(.,
-                        paste0("(?<=^|_)", paste0(tolower(layers),
-                                                  collapse = "|")),
-                        toupper),
-      matches(paste0("(^|_)", paste0(layers, collapse = "|"))))
+    ))
 
-    empty_cols <- names(app_data)[colSums(!is.na(app_data)) == 0]
+    empty_cols <- names(app_data_wide)[colSums(!is.na(app_data_wide)) == 0]
 
-    app_data <- app_data %>%
+    app_data_wide <- app_data_wide %>%
       select(-any_of(empty_cols))
 
 
@@ -345,7 +338,7 @@ get_app_data <- function(path = NULL) {
 
 
 
-  app_data <- app_data %>%
+  app_data_wide <- app_data_wide %>%
     left_join(
       # Add harmonised plot identifiers
       identification_df %>%
@@ -408,7 +401,48 @@ get_app_data <- function(path = NULL) {
     relocate(institute_sampling, .after = team_harmonized)
 
 
-  return(app_data)
+  # Deduplicate the app data
+  # (e.g., it seems like LWF 60_a is present twice in the app data)
+
+  vec_dupl <- app_data_wide$plot_code_simple[
+    duplicated(app_data_wide$plot_code_simple) &
+      !grepl("IBER", app_data_wide$institute_sampling)]
+
+  if (!identical(vec_dupl, character(0))) {
+
+    app_data_wide <- bind_rows(
+      # Records that are fine (not duplicated)
+      app_data_wide %>%
+        filter(!plot_code_simple %in% vec_dupl),
+      # Duplicated records
+      app_data_wide %>%
+        # restrict to duplicates only
+        filter(plot_code_simple %in% vec_dupl) %>%
+        group_by(plot_code_simple) %>%
+        # Filter for the most recent end_survey (time on which the survey was
+        # submitted)
+        slice_max(end_survey, with_ties = TRUE) %>%
+        # If this still leads to duplicated records:
+        group_modify(~ {
+          df <- .x
+          # Rule 1: if only one row after filtering by max end_survey
+          if (nrow(df) == 1) return(df)
+          # Rule 2a: if all rows identical, keep first
+          if (nrow(unique(df)) == 1) return(df[1, , drop = FALSE])
+
+          # Rule 2b: choose row with max number of non-NA values
+          non_na_counts <- rowSums(!is.na(df))
+          df <- df[non_na_counts == max(non_na_counts), drop = FALSE]
+
+          df
+        }) %>%
+        ungroup())
+
+  }
+
+
+
+  return(app_data_wide)
 
 
 
