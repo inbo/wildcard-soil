@@ -160,6 +160,12 @@ get_attribute_catalogue_app <- function() {
         glue("Number of undisturbed samples (e.g., Kopecky rings) taken in the pit in sampling point P1 for layer {sub('.*_(M[0-9]+)_.*', '\\\\1', col)}"),
         "-"
       )
+    } else if (grepl("_carbon_check$", col)) {
+      make_entry(
+        col,
+        glue("Logical indicating whether a sample was collected for layer {sub('^([^_]+)_.*$', '\\\\1', col)}"),
+        "-"
+      )
     } else {
       # If no pattern matches, return nothing
       NULL
