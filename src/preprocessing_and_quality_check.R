@@ -642,7 +642,7 @@ df_layers_undist <- df_layers_undist %>%
 
 
 
-# X. Compile and tidy pre-processed data ----
+# 5. Compile and tidy pre-processed data ----
 
 df_layers <- df_layers %>%
   # We renamed those
@@ -679,10 +679,9 @@ glimpse(df_layers)
 
 
 
-# X. Compile inconsistencies ----
+# 6. Compile inconsistencies ----
 
-
-
+## 6.1. Compile ----
 
 # So far, these are the implemented inconsistency checks, together with
 # the name of the inconsistency report in the Global Environment and the name
@@ -781,9 +780,14 @@ inc_report <- bind_rows(lapply(inc_reports, get, envir = .GlobalEnv)) %>%
       team %in% c("UNIUD/HSI", "UNIUD/HSI_EXTRA",
                             "UNIUD_EXTRA") ~ "UNIUD",
       team %in% c("URK", "WULS") ~ "IBL",
-      team %in% c("HUN-REN Centre for Ecological Research/VUKOZ(VUK)") ~
-        "VUKOZ(VUK)",
+      team %in% c("HUN-REN Centre for Ecological Research/VUKOZ(VUK)",
+                  "VUKOZ(VUK)") ~
+        "VUK",
       TRUE ~ team)) %>%
+  mutate(
+    partner_feedback = NA_character_,
+    partner_corrected_value = NA_character_,
+    partner_remark = NA_character_) %>%
   arrange(team)
 
 # Remove inconsistency with unexpected deeper samples in code DE-BGD-NP-1-F059-1
@@ -791,6 +795,64 @@ inc_report <- bind_rows(lapply(inc_reports, get, envir = .GlobalEnv)) %>%
 
 # You can link the inconsistencies with the app records using
 # globalid (without curly brackets and lowercase)
+
+
+
+## 6.2. Export ----
+
+dir <- paste0("./output/partner_inconsistencies/",
+              as.character(format(Sys.Date(), format = "%Y%m%d")), "/")
+
+if (!dir.exists(dir)) {
+  dir.create(dir)
+}
+
+
+write.table(inc_report,
+            file = paste0(dir,
+                          "partner_inconsistency_report_all.csv"),
+            row.names = FALSE,
+            na = "",
+            sep = ";",
+            dec = ".")
+
+# Per partner
+
+partners_inc <- unique(inc_report$team)
+
+for (i in seq_along(partners_inc)) {
+
+  inc_report_i <- inc_report %>%
+    filter(team == partners_inc[i])
+
+  wb <- createWorkbook()
+  addWorksheet(wb, "Inconsistency report")
+  addWorksheet(wb, "Attribute catalogue")
+  # Ideally, there would have to be a description of all attributes (columns)
+
+  writeData(wb, 1, inc_report_i)
+  addFilter(wb, 1, row = 1, cols = 1:ncol(inc_report_i))
+  dataValidation(wb, 1,
+                 col = which(names(inc_report_i) == "partner_feedback"),
+                 rows = seq(2, nrow(inc_report_i) + 1),
+                 type = "list",
+                 value = '"1 - The reported value is correct, 2 - The correct value is added"')
+
+  freezePane(wb, 1, firstActiveRow = 2, firstActiveCol = 1)
+  # writeData(wb, 2, xxx) # This should be some table with description of
+                          # the columns in inc_report
+
+  openxlsx::saveWorkbook(wb,
+                         file =
+                           paste0(dir,
+                                  tolower(gsub("[- ]", "", partners_inc[i])),
+                                  "_partner_inconsistency_report.xlsx"),
+                         overwrite = TRUE)
+
+} # End of "for i in partners"
+
+
+
 
 
 
