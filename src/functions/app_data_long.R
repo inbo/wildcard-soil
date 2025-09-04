@@ -187,9 +187,7 @@ app_data_long <- function(app_data_wide) {
   # TO DO: we will need to check these comments one by one and correct any
   # changes manually. For example, we need to know if less than 5 forest floor
   # sampling frames are taken.
-  # Also related to rings: sometimes people can only take rings in one sampling
-  # point, e.g. for M01, so M01 is only indicated in P*_bulk_density_lyr for
-  # one sampling point, while multiple rings may have been taken (central pit)!
+
 
 
 
@@ -249,7 +247,7 @@ app_data_long <- function(app_data_wide) {
     globalid = character(0),
     parameter = character(0),
     sample_code = character(0),
-    value = character(0),
+    value = character(0), # Must be character always!
     inconsistency_reason = character(0),
     unique_inconsistency = logical(0),
     rule_id = character(0))
@@ -325,6 +323,7 @@ app_data_long <- function(app_data_wide) {
       res_id_inst = res_id_harmonized,
       sample_code = code_layer,
       rule_id = rule_id) %>%
+    mutate(value = as.character(value)) %>%
     select(source, team, plot_code_app, res_id_inst, globalid, sample_code,
            parameter, parameter_description, parameter_unit, value,
            inconsistency_reason, unique_inconsistency, rule_id)
@@ -334,16 +333,6 @@ app_data_long <- function(app_data_wide) {
     inc)
 
 
-  # Note: as a potential additional inconsistency check, I was wondering
-  # if a forest floor tamass of "0" means actually that there is no forest
-  # floor was present, of just if they didn't sample it. But I have the
-  # impression that we can trust that 0 means no forest floor (so we need
-  # to include these points in the calculation of the areal mass).
-  # Likewise, NA in sampling points 1-5 is suspicious, but in 2025, it was
-  # not possible to submit the survey without filling this in. There are a
-  # few NAs in the VUK 2024 sites from WP3. These also seem to indicate
-  # "no (considerable) forest floor" considering the layer thickness. Which
-  # makes sense in WP3 sites.
 
 
 
@@ -399,6 +388,20 @@ app_data_long <- function(app_data_wide) {
   d_kopecky_depths <- tibble(
     code = c(10, 11, 12, 13),
     code_layer = c("M01", "M13", "M36", "M61"))
+
+  # Small helper function which we will use later to update the column
+  # undist_sampling_points. This column lists all sampling points where
+  # undisturbed samples (Kopeckys) were taken. The function makes sure that
+  # the number of "P1" entries matches the reported number of P1 undisturbed
+  # samples.
+  update_points <- function(points, n) {
+    if (is.na(n) || n <= 1) return(points)
+    pts <- str_split(points, ",")[[1]]
+    other <- pts[pts != "P1"]
+    updated <- c(rep("P1", n), other)
+    paste(updated, collapse = ",")
+  }
+
 
   # There are two formats of bulk density data:
   # - data collected by VUK in 2024 have "10,11,12,13" in "P*_bulk_density"
@@ -508,7 +511,24 @@ app_data_long <- function(app_data_wide) {
           (P1_num_M61_undist_samples + count_rings - 1),
         # ELSE, ignore P1_num_M36_undist_samples and
         # P1_num_M61_undist_samples
-        TRUE ~ count_rings_orig))
+        TRUE ~ count_rings_orig)) %>%
+    rowwise() %>%
+    mutate(
+      # Update undist_sampling_points also
+      # For example, if: undist_sampling_points is "P1,P4,P5" and
+      # P1_num_M36_undist_samples is 5,
+      # I want undist_sampling_points to become "P1,P1,P1,P1,P1,P4,P5"
+      undist_sampling_points = case_when(
+        # M36
+        code_layer == "M36" & !is.na(P1_num_M36_undist_samples) &
+          (P1_num_M36_undist_samples > 1)  ~
+          update_points(undist_sampling_points, P1_num_M36_undist_samples),
+        # M61
+        code_layer == "M61" & !is.na(P1_num_M61_undist_samples) &
+          (P1_num_M61_undist_samples > 1)  ~
+          update_points(undist_sampling_points, P1_num_M61_undist_samples),
+        TRUE ~ undist_sampling_points)) %>%
+    ungroup()
 
 
 
@@ -518,13 +538,13 @@ app_data_long <- function(app_data_wide) {
 
 
 
-  ### INCONSISTENCY X ----
+  ### INCONSISTENCY 3 ----
 
   rule <- paste0("The total number of reported undisturbed samples from the ",
                  "central pit (P1) and additional sampling points should not ",
                  "exceed 5 (unlikely). Please check how many undisturbed ",
                  "samples you took at the given depth.")
-  rule_id <- "X"
+  rule_id <- "3"
 
 
   # Records with a problem
@@ -571,6 +591,10 @@ app_data_long <- function(app_data_wide) {
         parameter == "count_rings_p2to5" ~
           paste0("Number of undisturbed samples (e.g., Kopecky rings) taken ",
                  "across sampling points P2 to P5 for given depth"),
+        TRUE ~ parameter_description),
+      parameter_unit = case_when(
+        parameter == "P1_num_undist_samples" ~ "-",
+        parameter == "count_rings_p2to5" ~ "-",
         TRUE ~ parameter_description)) %>%
     relocate(parameter_description, parameter_unit, .after = parameter) %>%
     mutate(
@@ -582,6 +606,7 @@ app_data_long <- function(app_data_wide) {
       res_id_inst = res_id_harmonized,
       sample_code = code_layer,
       rule_id = rule_id) %>%
+    mutate(value = as.character(value)) %>%
     select(source, team, plot_code_app, res_id_inst, globalid, sample_code,
            parameter, parameter_description, parameter_unit, value,
            inconsistency_reason, unique_inconsistency, rule_id)
@@ -592,19 +617,16 @@ app_data_long <- function(app_data_wide) {
 
 
 
-  # Add inconsistencies:
-  # P1_num + count_rings_orig > 6
-  # P1_num == 1 & count_rings == 1
 
 
-  ### INCONSISTENCY X ----
+  ### INCONSISTENCY 4 ----
 
   rule <- paste0("The total number of reported undisturbed samples from the ",
                  "central pit (P1) and additional sampling points should ",
                  "not be 1 (unlikely). Please check how many undisturbed ",
                  "samples you took at the given depth.")
 
-  rule_id <- "X"
+  rule_id <- "4"
 
 
   # Records with a problem
@@ -648,6 +670,10 @@ app_data_long <- function(app_data_wide) {
         parameter == "count_rings_p2to5" ~
           paste0("Number of undisturbed samples (e.g., Kopecky rings) taken ",
                  "across sampling points P2 to P5 for given depth"),
+        TRUE ~ parameter_description),
+      parameter_unit = case_when(
+        parameter == "P1_num_undist_samples" ~ "-",
+        parameter == "count_rings_p2to5" ~ "-",
         TRUE ~ parameter_description)) %>%
     relocate(parameter_description, parameter_unit, .after = parameter) %>%
     mutate(
@@ -659,6 +685,7 @@ app_data_long <- function(app_data_wide) {
       res_id_inst = res_id_harmonized,
       sample_code = code_layer,
       rule_id = rule_id) %>%
+    mutate(value = as.character(value)) %>%
     select(source, team, plot_code_app, res_id_inst, globalid, sample_code,
            parameter, parameter_description, parameter_unit, value,
            inconsistency_reason, unique_inconsistency, rule_id)
@@ -749,13 +776,13 @@ app_data_long <- function(app_data_wide) {
   # field (especially for stony sites)
 
 
-  ### INCONSISTENCY 3 ----
+  ### INCONSISTENCY 5 ----
 
   rule <- paste0("Bedrock depth is missing (NA) in some sampling points ",
                  "(P1-5), while others report shallow bedrock. Please ",
                  "confirm that all missing values are correctly marked as ",
                  "NA (i.e., bedrock below 100 cm)")
-  rule_id <- "3"
+  rule_id <- "5"
 
 
 
@@ -787,6 +814,7 @@ app_data_long <- function(app_data_wide) {
       res_id_inst = res_id_harmonized,
       sample_code = NA_character_,
       rule_id = rule_id) %>%
+    mutate(value = as.character(value)) %>%
     select(source, team, plot_code_app, res_id_inst, globalid, sample_code,
            parameter, parameter_description, parameter_unit, value,
            inconsistency_reason, unique_inconsistency, rule_id)
@@ -809,7 +837,8 @@ app_data_long <- function(app_data_wide) {
            -vol_ring) %>%
     rename_with(~ str_replace_all(., "eDNA", "edna")) %>%
     rename_with(~ str_replace_all(., "(flamm|carbon)", "dist")) %>%
-    select(code, team_harmonized, globalid, res_id_harmonized,
+    select(code, plot_code_simple, team_harmonized, globalid, res_id_harmonized,
+           wp, institute_sampling,
            contains("OL"), contains("OFH"),
            contains("M01"), contains("M13"), contains("M36"),
            contains("M61")) %>%
@@ -833,7 +862,8 @@ app_data_long <- function(app_data_wide) {
       variable = str_replace_all(variable, "__", "_"),
       variable = str_replace_all(variable, "^_|_$", "")
     ) %>%
-    select(code, team_harmonized, globalid, res_id_harmonized,
+    select(code, plot_code_simple, team_harmonized, globalid, res_id_harmonized,
+           wp, institute_sampling,
            code_layer, variable, value) %>%
     pivot_wider(
       names_from = variable,
@@ -849,13 +879,13 @@ app_data_long <- function(app_data_wide) {
 
 
 
-  ### INCONSISTENCY X ----
+  ### INCONSISTENCY 6 ----
 
   rule <- paste0("Volumetric percentage of coarse fragments > 50 mm should ",
                  "not exceed that > 2 mm. You may have only indicated coarse ",
                  "fragments between 2–50 mm under > 2 mm.")
 
-  rule_id <- "X"
+  rule_id <- "6"
 
 
   # Records with a problem
@@ -892,6 +922,7 @@ app_data_long <- function(app_data_wide) {
       res_id_inst = res_id_harmonized,
       sample_code = code_layer,
       rule_id = rule_id) %>%
+    mutate(value = as.character(value)) %>%
     select(source, team, plot_code_app, res_id_inst, globalid, sample_code,
            parameter, parameter_description, parameter_unit, value,
            inconsistency_reason, unique_inconsistency, rule_id)
@@ -990,11 +1021,11 @@ app_data_long <- function(app_data_wide) {
 
 
 
-  ### INCONSISTENCY 4 ----
+  ### INCONSISTENCY 7 ----
 
   rule <- paste0("Undisturbed mass should be plausible in comparison with ",
                  "number and volume of rings")
-  rule_id <- "4"
+  rule_id <- "7"
 
 
   # These are the 5-95 % quantiles of the bulk densities of mineral matrices
@@ -1020,9 +1051,7 @@ app_data_long <- function(app_data_wide) {
                 bulk_den > bulk_den_est_max)) %>%
     relocate(contains("bulk_den_est_m"), .after = bulk_den) %>%
     relocate(vol_undist, vol_ring, count_rings, .before = bulk_den)
-    # It may be that bulk density samples are heavier than expected if more
-    # rings have been taken at an individual sampling point. But for now,
-    # we can just include all problematic cases.
+
 
   inc <- recs_problem %>%
     mutate(
@@ -1053,7 +1082,10 @@ app_data_long <- function(app_data_wide) {
         parameter == "count_rings" ~
           paste0("Number of undisturbed samples (e.g., Kopecky rings) taken ",
                  "for given depth"),
-        TRUE ~ parameter_description)) %>%
+        TRUE ~ parameter_description),
+      parameter_unit = case_when(
+        parameter == "count_rings" ~ "-",
+        TRUE ~ parameter_unit)) %>%
     relocate(parameter_description, parameter_unit, .after = parameter) %>%
     mutate(
       # mark unique_inconsistency = TRUE only for the first parameter per record
@@ -1064,6 +1096,7 @@ app_data_long <- function(app_data_wide) {
       res_id_inst = res_id_harmonized,
       sample_code = code_layer,
       rule_id = rule_id) %>%
+    mutate(value = as.character(value)) %>%
     select(source, team, plot_code_app, res_id_inst, globalid, sample_code,
            parameter, parameter_description, parameter_unit, value,
            inconsistency_reason, unique_inconsistency, rule_id)
@@ -1079,11 +1112,11 @@ app_data_long <- function(app_data_wide) {
 
 
 
-  ### INCONSISTENCY 5 ----
+  ### INCONSISTENCY 8 ----
 
   rule <- paste0("Subsample forest floor for lab cannot weigh more than sum of",
                  "all reported forest floor masses across sampling points")
-  rule_id <- "5"
+  rule_id <- "8"
 
 
 
@@ -1127,7 +1160,10 @@ app_data_long <- function(app_data_wide) {
       parameter_description = case_when(
         parameter == "tamass" ~
           "Net field-moist mass of the given layer across all sampling points",
-        TRUE ~ parameter_description)) %>%
+        TRUE ~ parameter_description),
+      parameter_unit = case_when(
+        parameter == "tamass" ~ "g",
+        TRUE ~ parameter_unit)) %>%
     relocate(parameter_description, parameter_unit, .after = parameter) %>%
     mutate(
       # mark unique_inconsistency = TRUE only for the first parameter per record
@@ -1138,6 +1174,7 @@ app_data_long <- function(app_data_wide) {
       res_id_inst = res_id_harmonized,
       sample_code = code_layer,
       rule_id = rule_id) %>%
+    mutate(value = as.character(value)) %>%
     select(source, team, plot_code_app, res_id_inst, globalid, sample_code,
            parameter, parameter_description, parameter_unit, value,
            inconsistency_reason, unique_inconsistency, rule_id)
@@ -1149,12 +1186,12 @@ app_data_long <- function(app_data_wide) {
 
 
 
-  ### INCONSISTENCY X ----
+  ### INCONSISTENCY 9 ----
 
   rule <- paste0("For depths below the deepest reported bedrock depth, ",
                  "no samples are expected to be taken")
 
-  rule_id <- "X"
+  rule_id <- "9"
 
 
   # Records with a problem
@@ -1165,17 +1202,19 @@ app_data_long <- function(app_data_wide) {
 
   inc <- recs_problem %>%
     mutate(
-      inconsistency_reason = rule) %>%
+      inconsistency_reason = rule,
+      depth_bedrock_max = as.character(depth_bedrock_max)) %>%
     # pivot longer to get one row per parameter
     pivot_longer(
-      cols = c(bulk_den, count_rings, vol_ring),
+      cols = c(dist_check, depth_bedrock_max),
       names_to = "parameter",
       values_to = "value"
     ) %>%
     mutate(
       parameter = case_when(
-        parameter %in% c("bulk_den") ~
-          paste(tolower(code_layer), parameter, sep = "_"),
+        parameter == "dist_check" & code_layer == "OFH" ~ "OFH_carbon_check",
+        parameter == "dist_check" & code_layer != "OFH" ~
+          paste(tolower(code_layer), "carbon_check", sep = "_"),
         TRUE ~ parameter)) %>%
     left_join(attribute_catalogue %>%
                 rename(parameter_description = descr,
@@ -1183,20 +1222,23 @@ app_data_long <- function(app_data_wide) {
               by = join_by("parameter" == "column_name")) %>%
     mutate(
       parameter_description = case_when(
-        parameter == "count_rings" ~
-          paste0("Number of undisturbed samples (e.g., Kopecky rings) taken for ",
-                 "given depth"),
-        TRUE ~ parameter_description)) %>%
+        parameter == "depth_bedrock_max" ~
+          paste0("Deepest reported bedrock depth in sampling points P1-5"),
+        TRUE ~ parameter_description),
+      parameter_unit = case_when(
+        parameter == "depth_bedrock_max" ~ "cm",
+        TRUE ~ parameter_unit)) %>%
     relocate(parameter_description, parameter_unit, .after = parameter) %>%
     mutate(
       # mark unique_inconsistency = TRUE only for the first parameter per record
-      unique_inconsistency = (grepl("bulk_den", parameter)),
+      unique_inconsistency = (grepl("check", parameter)),
       source = "Survey123 app",
       team = team_harmonized,
       plot_code_app = code,
       res_id_inst = res_id_harmonized,
       sample_code = code_layer,
       rule_id = rule_id) %>%
+    mutate(value = as.character(value)) %>%
     select(source, team, plot_code_app, res_id_inst, globalid, sample_code,
            parameter, parameter_description, parameter_unit, value,
            inconsistency_reason, unique_inconsistency, rule_id)
@@ -1211,20 +1253,71 @@ app_data_long <- function(app_data_wide) {
 
 
 
+  ### INCONSISTENCY 10 ----
+
+  rule <- paste0("Samples weighing more than 0 g are expected to show ",
+                 "'sample collected'")
+
+  rule_id <- "10"
+
+
+  # Records with a problem
+
+  recs_problem <- df_layers_all %>%
+    filter(dist_check != "Sample collected") %>%
+    filter(dist > 0)
+
+  inc <- recs_problem %>%
+    mutate(
+      inconsistency_reason = rule,
+      dist = as.character(dist)) %>%
+    # pivot longer to get one row per parameter
+    pivot_longer(
+      cols = c(dist_check, dist),
+      names_to = "parameter",
+      values_to = "value"
+    ) %>%
+    mutate(
+      parameter = case_when(
+        parameter == "dist" & code_layer == "OFH" ~ "OFH_carbon",
+        parameter == "dist" & code_layer != "OFH" ~
+          paste(tolower(code_layer), "carbon", sep = "_"),
+        parameter == "dist_check" & code_layer == "OFH" ~ "OFH_carbon_check",
+        parameter == "dist_check" & code_layer != "OFH" ~
+          paste(tolower(code_layer), "carbon_check", sep = "_"),
+        TRUE ~ parameter)) %>%
+    left_join(attribute_catalogue %>%
+                rename(parameter_description = descr,
+                       parameter_unit = unit),
+              by = join_by("parameter" == "column_name")) %>%
+    relocate(parameter_description, parameter_unit, .after = parameter) %>%
+    mutate(
+      # mark unique_inconsistency = TRUE only for the first parameter per record
+      unique_inconsistency = (grepl("check", parameter)),
+      source = "Survey123 app",
+      team = team_harmonized,
+      plot_code_app = code,
+      res_id_inst = res_id_harmonized,
+      sample_code = code_layer,
+      rule_id = rule_id) %>%
+    mutate(value = as.character(value)) %>%
+    select(source, team, plot_code_app, res_id_inst, globalid, sample_code,
+           parameter, parameter_description, parameter_unit, value,
+           inconsistency_reason, unique_inconsistency, rule_id)
+
+  inconsistencies <- bind_rows(
+    inconsistencies,
+    inc)
+
+
+
+
+
+
 # 7. Compile all plot-specific data ----
 
-
-
-  assign(name_export, inconsistencies, envir = .GlobalEnv)
-  cat(paste0("Object '", name_export, "' is imported in global environment.\n"))
-
-
-# add depths
-
-# return plot-specific data as well
-
-
-c("code", "survey_date",
+plot_columns <- c(
+  "survey_date",
   "humus_form", "wrb_ref_soil_group", "wrb_qualifier_1", "wrb_qualifier_supp",
   "latitude", "longitude", "coordinates", "hor_accuracy",
   "air_temperature", "actual_weather", "past_weather",
@@ -1240,7 +1333,63 @@ c("code", "survey_date",
   "P8_expected_pos", "P8_describe_pos",
   "P9_expected_pos", "P9_describe_pos")
 
+d_soil_group <- read.csv("./data/additional_data/d_soil_group.csv",
+                         sep = ";")
+d_soil_adjective <- read.csv("./data/additional_data/d_soil_adjective.csv",
+                             sep = ";")
+
+df_plot <- app_data %>%
+  select(code,
+         composed_site_id, plot_code, plot_code_simple,
+         team_harmonized, institute_sampling,
+         any_of(plot_columns)) %>%
+  left_join(
+    df_properties_plot,
+    by = "code") %>%
+  rename(code_wrb_ref_soil_group = wrb_ref_soil_group,
+         code_wrb_qualifier_1 = wrb_qualifier_1) %>%
+  left_join(
+    d_soil_group %>%
+      select(code, description) %>%
+      rename(wrb_ref_soil_group = description),
+    by = join_by("code_wrb_ref_soil_group" == "code")) %>%
+  left_join(
+    d_soil_adjective %>%
+      select(code, description) %>%
+      rename(wrb_qualifier_1 = description),
+    by = join_by("code_wrb_qualifier_1" == "code")) %>%
+  relocate(wrb_ref_soil_group, wrb_qualifier_1,
+           .before = code_wrb_ref_soil_group) %>%
+  mutate(
+    humus_form = str_to_title(humus_form))
 
 
+# Remark: sometimes there are issues with coordinates being in different
+# columns. If so, better update get_app_data() so that the coordinates
+# end up in latitude and longitude
+
+
+# TO DO: maybe one remaining issue, some partners may have reported slope
+# in % instead of degrees. I think this is the case for WSL (some plots).
+# Those would have to be corrected.
+
+
+# 8. Return datasets ----
+
+# Using assign() instead of return() here, since multiple
+
+# Plot-specific data
+
+assign("df_plot", df_plot, envir = .GlobalEnv)
+cat(paste0("Object '", "df_plot", "' is imported in global environment.\n"))
+
+# Inconsistencies
+
+assign(name_export, inconsistencies, envir = .GlobalEnv)
+cat(paste0("Object '", name_export, "' is imported in global environment.\n"))
+
+# Layer-specific data
+
+return(df_layers_all)
 
 }
