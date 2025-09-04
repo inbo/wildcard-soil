@@ -351,9 +351,9 @@ get_lab_data <- function() {
         clay = round(TEXTUUR_LD_LS13320_V__KLEI.04.6µm, 1),
         silt = round(TEXTUUR_LD_LS13320_V__LEEM.6.63µm, 1),
         sand = round(TEXTUUR_LD_LS13320_V__ZAND.63.2000µm, 1)) %>%
-      rename(sample_id_harm = ExternSampleID) %>%
+      rename(sample_id = ExternSampleID) %>%
       select(
-        sample_id_harm,
+        sample_id,
         c_organic_total, c_organic_total_min, c_organic_total_max,
         n_total, n_total_min, n_total_max,
         c_inorganic_total, c_inorganic_total_min, c_inorganic_total_max,

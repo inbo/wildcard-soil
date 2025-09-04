@@ -37,7 +37,7 @@ show_sites_per_partner <- function(inst) {
   }
 
   filtered_wp2 <- get("his") %>%
-    filter(grepl(paste(inst, collapse = "|"), institute)) %>%
+    filter(grepl(paste(inst, collapse = "|"), institute_sampling)) %>%
     arrange(institute, res_id_inst) %>%
     select(res_id_inst,
            reserve_name,
@@ -45,7 +45,7 @@ show_sites_per_partner <- function(inst) {
            composed_site_id)
 
   filtered_wp3 <- get("wp3_sites") %>%
-    filter(grepl(paste(inst, collapse = "|"), institute)) %>%
+    filter(grepl(paste(inst, collapse = "|"), institute_sampling)) %>%
     arrange(institute, region, site_id) %>%
     select(
       chronosequence_id,
