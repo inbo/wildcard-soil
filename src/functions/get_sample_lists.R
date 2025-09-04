@@ -120,8 +120,34 @@ get_sample_lists <- function() {
     # sample list).
 
 
+    # In case the partner used some code for the plot instead of sample_id
+    # in column sample_id: combine with column sample_code
+
+    # To do so, first make some auxiliary column by combining sample_id and
+    # sample_code, and check whether it has more unique values than
+    # sample_id
+
+    df <- df %>%
+      mutate(
+        sample_id_aux = paste(sample_id, sample_code_harm, sep = "_"),
+        sample_id_harmonised_aux =
+          paste(composed_site_id, sample_code_harm, sep = "_"))
+
+    if (n_distinct(df$sample_id_aux) > n_distinct(df$sample_id) &&
+        !(n_distinct(df$sample_id) == 1 && is.na(unique(df$sample_id)))) {
+
+      assertthat::assert_that(
+        n_distinct(df$sample_id_harmonised_aux) == n_distinct(df$sample_id_aux))
+
+      df <- df %>%
+        mutate(
+          sample_id = sample_id_aux)
+    }
+
+
     # Select and reorder columns
     df <- df %>%
+      select(-sample_id_aux, -sample_id_harmonised_aux) %>%
       select(any_of(all_cols)) %>%
       relocate(any_of(all_cols)) %>% # Moves columns to desired order
       mutate(across(c(plot_id, res_id_inst, sub_id),
@@ -190,13 +216,13 @@ get_sample_lists <- function() {
         composed_site_id == "WULS__1__Bialowieza National Park__NA",
         case_when(
           grepl("Transect V$", sample_id, ignore.case = TRUE) ~
-            paste(composed_site_id, "Transect V", sep = "_"),
+            paste(composed_site_id, "Transect V", sep = "__"),
           grepl("Transect IV$", sample_id, ignore.case = TRUE) ~
-            paste(composed_site_id, "Transect IV", sep = "_"),
+            paste(composed_site_id, "Transect IV", sep = "__"),
           grepl("Transect III$", sample_id, ignore.case = TRUE) ~
-            paste(composed_site_id, "Transect III", sep = "_"),
+            paste(composed_site_id, "Transect III", sep = "__"),
           grepl("Transect II$", sample_id, ignore.case = TRUE) ~
-            paste(composed_site_id, "Transect II", sep = "_")),
+            paste(composed_site_id, "Transect II", sep = "__")),
         composed_site_id)) %>%
     mutate(
       plot_code_harm = paste(
@@ -218,6 +244,24 @@ get_sample_lists <- function() {
         # since several entries contain a "-" already,
         # and since we are making a new harmonised sample_id anyway...
         sep = "__")) %>%
+    rowwise() %>%
+    mutate(
+      # sample_id_simple:
+      # A sample_id without plot_id to avoid issues with late updates of
+      # plot_id, and without country code since redundant and possible source
+      # of issues (based on plot_code_simple)
+      # Example:
+      # INBO__11__NA__OFH_carbon
+      # WULS__1__NA__Transect II__M01_Bulk_Density
+      sample_id_simple = map_chr(plot_code_simple, ~{
+        parts <- str_split(.x, fixed("__"))[[1]]
+        if (length(parts) >= 3) {
+          paste(c(parts[1:2], parts[-(1:3)], sample_code_harm), collapse = "__")
+        } else {
+          .x
+        }
+      })) %>%
+    ungroup() %>%
     relocate(plot_code_harm, sample_id_harm, reserve_name,
              .before = sample_id) %>%
     mutate(
