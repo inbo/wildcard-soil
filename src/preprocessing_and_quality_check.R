@@ -831,9 +831,9 @@ for (i in seq_along(partners_inc)) {
   # Ideally, there would have to be a description of all attributes (columns)
 
   writeData(wb, 1, inc_report_i)
-  addFilter(wb, 1, row = 1, cols = 1:ncol(inc_report_i))
+  addFilter(wb, 1, rows = 1, cols = 1:ncol(inc_report_i))
   dataValidation(wb, 1,
-                 col = which(names(inc_report_i) == "partner_feedback"),
+                 cols = which(names(inc_report_i) == "partner_feedback"),
                  rows = seq(2, nrow(inc_report_i) + 1),
                  type = "list",
                  value = '"1 - The reported value is correct, 2 - The correct value is added"')
