@@ -17,19 +17,24 @@ rf_overview <- data.frame(
          id_rf03,
          id_rf04,
          id_rf05,
-         id_rf06
+         id_rf06,
+         id_rf07,
+         id_rf08
          ),
   partners = c("INBO",
                "INBO",
                "UNIUD|BFNP|LWF",
                "UNIUD|BFNP|LWF",
                "WSL",
-               "WSL"
+               "WSL",
+               "FVA-BW|NWFVA"
                ),
   samples = c("M01|M13|M36|M61",
               "OFH",
               "M01|M13|M36|M61",
               "OFH",
+              "M01|M13|M36|M61",
+              "OFH"
               "M01|M13|M36|M61",
               "OFH"
               ))
