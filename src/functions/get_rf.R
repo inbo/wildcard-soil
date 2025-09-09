@@ -27,6 +27,7 @@ rf_overview <- data.frame(
                "UNIUD|BFNP|LWF",
                "WSL",
                "WSL",
+               "FVA-BW|NWFVA",
                "FVA-BW|NWFVA"
                ),
   samples = c("M01|M13|M36|M61",
