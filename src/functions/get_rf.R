@@ -35,7 +35,7 @@ rf_overview <- data.frame(
               "M01|M13|M36|M61",
               "OFH",
               "M01|M13|M36|M61",
-              "OFH"
+              "OFH",
               "M01|M13|M36|M61",
               "OFH"
               ))
