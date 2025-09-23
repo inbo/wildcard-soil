@@ -10,7 +10,9 @@ rf_overview <- data.frame(
          "V-25V006-05",
          "V-25V006-06",
          "V-25V006-07",
-         "V-25V006-08"
+         "V-25V006-08",
+         "V-25V006-09",
+         "V-25V006-10"
          ),
   id = c(id_rf01,
          id_rf02,
@@ -19,7 +21,9 @@ rf_overview <- data.frame(
          id_rf05,
          id_rf06,
          id_rf07,
-         id_rf08
+         id_rf08,
+         id_rf09,
+         id_rf10
          ),
   partners = c("INBO",
                "INBO",
@@ -28,9 +32,13 @@ rf_overview <- data.frame(
                "WSL",
                "WSL",
                "FVA-BW|NWFVA",
-               "FVA-BW|NWFVA"
+               "FVA-BW|NWFVA",
+               "DISAFA - UNITO|IBER-BAS|AlberIT - UNIRC|UCPH|WR|BGD-NP",
+               "DISAFA - UNITO|IBER-BAS|AlberIT - UNIRC|UCPH|WR|BGD-NP"
                ),
   samples = c("M01|M13|M36|M61",
+              "OFH",
+              "M01|M13|M36|M61",
               "OFH",
               "M01|M13|M36|M61",
               "OFH",
