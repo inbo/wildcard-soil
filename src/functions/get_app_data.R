@@ -136,7 +136,8 @@ get_app_data <- function(path = NULL) {
         humus_form = any_of(c("P1_humus_form", "humus_form")),
         date_time = any_of(c("date_time (UTC)", "date_time")),
         x = any_of(c("x", "X_WGS", "...241")),
-        y = any_of(c("y", "Y_WGS", "...242"))) %>%
+        y = any_of(c("y", "Y_WGS", "...242")),
+        globalid = any_of(c("globalid", "GlobalID"))) %>%
       mutate(
         # Create column only if missing
         air_temperature =
@@ -158,7 +159,11 @@ get_app_data <- function(path = NULL) {
           if (!"humus_form2" %in% names(.)) NA_character_
         else humus_form2,
         surface_frame =
-          if (!"surface_frame" %in% names(.)) .0625 else surface_frame) %>%
+          if (!"surface_frame" %in% names(.)) .0625 else surface_frame,
+        hor_accuracy_man =
+          if (!"hor_accuracy_man" %in% names(.)) NA_real_
+        else hor_accuracy_man
+        ) %>%
       # UTC time zone (Coordinated Universal Time)
       mutate(
         date_time =
