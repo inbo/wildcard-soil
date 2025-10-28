@@ -137,6 +137,7 @@ get_sample_lists <- function() {
         !(n_distinct(df$sample_id) == 1 && is.na(unique(df$sample_id)))) {
 
       assertthat::assert_that(
+        any(df$composed_site_id == "WULS__1__Bialowieza National Park__NA") ||
         n_distinct(df$sample_id_harmonised_aux) == n_distinct(df$sample_id_aux))
 
       df <- df %>%
@@ -207,22 +208,29 @@ get_sample_lists <- function() {
       cols_remove = FALSE
     ) %>%
     left_join(
-      bind_rows(his_plot_ids,
+      bind_rows(his_plot_ids %>%
+                  distinct(composed_site_id, .keep_all = TRUE),
                 wp3_plot_ids),
       by = join_by("composed_site_id", "wp")) %>%
     mutate(
       # Make sure that the transect of Bialowieza is mentioned in sample_id!
-      plot_code_simple = ifelse(
+      plot_id_harm = ifelse(
         composed_site_id == "WULS__1__Bialowieza National Park__NA",
         case_when(
           grepl("Transect V$", sample_id, ignore.case = TRUE) ~
-            paste(composed_site_id, "Transect V", sep = "__"),
+            "Transect V",
           grepl("Transect IV$", sample_id, ignore.case = TRUE) ~
-            paste(composed_site_id, "Transect IV", sep = "__"),
+            "Transect IV",
           grepl("Transect III$", sample_id, ignore.case = TRUE) ~
-            paste(composed_site_id, "Transect III", sep = "__"),
+            "Transect III",
           grepl("Transect II$", sample_id, ignore.case = TRUE) ~
-            paste(composed_site_id, "Transect II", sep = "__")),
+            "Transect II"),
+        plot_id_harm),
+      plot_code_simple = ifelse(
+        composed_site_id == "WULS__1__Bialowieza National Park__NA",
+        # We know now that plot_id_harm contains the correct transect for
+        # Bialowieza
+        paste(composed_site_id, plot_id_harm, sep = "__"),
         composed_site_id)) %>%
     mutate(
       plot_code_harm = paste(
