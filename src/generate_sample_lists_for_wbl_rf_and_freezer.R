@@ -42,7 +42,7 @@ source("./data/sensitive_metadata/google_drive_links.R")
 
 # Date of last sample registration
 # (samples that arrived after this will be filtered for)
-date_last_reg <- parsedate::parse_date("2025-10-16")
+date_last_reg <- parsedate::parse_date("2025-10-21")
 
 # Indicate whether an RF is available already
 rf_avail <- TRUE
