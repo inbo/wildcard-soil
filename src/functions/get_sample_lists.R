@@ -217,13 +217,13 @@ get_sample_lists <- function() {
       plot_id_harm = ifelse(
         composed_site_id == "WULS__1__Bialowieza National Park__NA",
         case_when(
-          grepl("Transect V$", sample_id, ignore.case = TRUE) ~
+          grepl("Transect V", sample_id, ignore.case = TRUE) ~
             "Transect V",
-          grepl("Transect IV$", sample_id, ignore.case = TRUE) ~
+          grepl("Transect IV", sample_id, ignore.case = TRUE) ~
             "Transect IV",
-          grepl("Transect III$", sample_id, ignore.case = TRUE) ~
+          grepl("Transect III", sample_id, ignore.case = TRUE) ~
             "Transect III",
-          grepl("Transect II$", sample_id, ignore.case = TRUE) ~
+          grepl("Transect II", sample_id, ignore.case = TRUE) ~
             "Transect II"),
         plot_id_harm),
       plot_code_simple = ifelse(
