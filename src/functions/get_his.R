@@ -45,6 +45,7 @@ get_his <- function(include_extra_plots = TRUE,
         left_join(
           app_data %>%
             filter(wp == "WP2") %>%
+            distinct(composed_site_id, .keep_all = TRUE)%>%
             select(composed_site_id, plot_id_harmonized),
           by = "composed_site_id")
 
@@ -52,8 +53,8 @@ get_his <- function(include_extra_plots = TRUE,
       # the number of surveys that has been submitted in the Survey123 app
       # for WP2
 
-      vec_app <- app_data$composed_site_id[which(app_data$wp == "WP2")]
-      vec_his <- his$composed_site_id[which(!is.na(his$plot_id_harmonized))]
+      vec_app <- unique(app_data$composed_site_id[which(app_data$wp == "WP2")])
+      vec_his <- unique(his$composed_site_id[which(!is.na(his$plot_id_harmonized))])
 
       assertthat::assert_that(
         length(vec_app) == length(vec_his),
