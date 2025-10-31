@@ -203,14 +203,14 @@ s_dist_full <- samples %>%
                 plot_code_simple = ifelse(
                   composed_site_id == "WULS__1__Bialowieza National Park__NA",
                   case_when(
-                    grepl("Transect V$", plot_id, ignore.case = TRUE) ~
-                      paste(composed_site_id, "Transect V", sep = "_"),
-                    grepl("Transect IV$", plot_id, ignore.case = TRUE) ~
-                      paste(composed_site_id, "Transect IV", sep = "_"),
-                    grepl("Transect III$", plot_id, ignore.case = TRUE) ~
-                      paste(composed_site_id, "Transect III", sep = "_"),
-                    grepl("Transect II$", plot_id, ignore.case = TRUE) ~
-                      paste(composed_site_id, "Transect II", sep = "_")),
+                    grepl("Transect V", plot_id, ignore.case = TRUE) ~
+                      paste(composed_site_id, "Transect V", sep = "__"),
+                    grepl("Transect IV", plot_id, ignore.case = TRUE) ~
+                      paste(composed_site_id, "Transect IV", sep = "__"),
+                    grepl("Transect III", plot_id, ignore.case = TRUE) ~
+                      paste(composed_site_id, "Transect III", sep = "__"),
+                    grepl("Transect II", plot_id, ignore.case = TRUE) ~
+                      paste(composed_site_id, "Transect II", sep = "__")),
                   composed_site_id)) %>%
               select(plot_code_simple, id_sample_pretreatment),
             by = join_by("plot_code_simple"))
