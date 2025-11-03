@@ -344,13 +344,13 @@ get_his <- function(include_extra_plots = TRUE,
       plot_code_simple = ifelse(
         composed_site_id == "WULS__1__Bialowieza National Park__NA",
         case_when(
-          grepl("Transect V$", plot_id, ignore.case = TRUE) ~
+          grepl("Transect V", plot_id, ignore.case = TRUE) ~
             paste(composed_site_id, "Transect V", sep = "__"),
-          grepl("Transect IV$", plot_id, ignore.case = TRUE) ~
+          grepl("Transect IV", plot_id, ignore.case = TRUE) ~
             paste(composed_site_id, "Transect IV", sep = "__"),
-          grepl("Transect III$", plot_id, ignore.case = TRUE) ~
+          grepl("Transect III", plot_id, ignore.case = TRUE) ~
             paste(composed_site_id, "Transect III", sep = "__"),
-          grepl("Transect II$", plot_id, ignore.case = TRUE) ~
+          grepl("Transect II", plot_id, ignore.case = TRUE) ~
             paste(composed_site_id, "Transect II", sep = "__")),
         composed_site_id)) %>%
     relocate(institute_sampling, .after = institute) %>%
