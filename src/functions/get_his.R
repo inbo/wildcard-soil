@@ -21,10 +21,11 @@ get_his <- function(include_extra_plots = TRUE,
   # Source URLs of sensitive Google Drive links
   source("./data/sensitive_metadata/google_drive_links.R")
 
-  if (add_plot_ids_from_app == TRUE) {
+  if (add_plot_ids_from_app == TRUE &&
+      !exists("app_data_wide", envir = globalenv())) {
 
     source("./src/functions/get_app_data.R")
-    app_data <- get_app_data()
+    app_data_wide <- get_app_data()
 
   }
 
@@ -43,7 +44,7 @@ get_his <- function(include_extra_plots = TRUE,
 
       his <- his %>%
         left_join(
-          app_data %>%
+          app_data_wide %>%
             filter(wp == "WP2") %>%
             distinct(composed_site_id, .keep_all = TRUE)%>%
             select(composed_site_id, plot_id_harmonized),
@@ -53,8 +54,10 @@ get_his <- function(include_extra_plots = TRUE,
       # the number of surveys that has been submitted in the Survey123 app
       # for WP2
 
-      vec_app <- unique(app_data$composed_site_id[which(app_data$wp == "WP2")])
-      vec_his <- unique(his$composed_site_id[which(!is.na(his$plot_id_harmonized))])
+      vec_app <-
+        unique(app_data_wide$composed_site_id[which(app_data_wide$wp == "WP2")])
+      vec_his <-
+        unique(his$composed_site_id[which(!is.na(his$plot_id_harmonized))])
 
       assertthat::assert_that(
         length(vec_app) == length(vec_his),
@@ -218,7 +221,7 @@ get_his <- function(include_extra_plots = TRUE,
 
         his <- his %>%
           left_join(
-            app_data %>%
+            app_data_wide %>%
               filter(wp == "WP2") %>%
               select(composed_site_id, plot_id_harmonized),
             by = "composed_site_id")
@@ -227,7 +230,8 @@ get_his <- function(include_extra_plots = TRUE,
         # the number of surveys that has been submitted in the Survey123 app
         # for WP2
 
-        vec_app <- app_data$composed_site_id[which(app_data$wp == "WP2")]
+        vec_app <-
+          app_data_wide$composed_site_id[which(app_data_wide$wp == "WP2")]
         vec_his <- his$composed_site_id[which(!is.na(his$plot_id_harmonized))]
 
         assertthat::assert_that(
