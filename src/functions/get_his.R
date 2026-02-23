@@ -71,10 +71,9 @@ get_his <- function(include_extra_plots = TRUE,
                      paste(vec_app[which(!vec_app %in% vec_his)],
                            collapse = ",  ")))
 
-      message(paste0("So far, ", length(vec_his), " plot_ids out of 208 are ",
-                     "known for WP2. This is derived from the Survey123 app ",
-                     "(harmonized) and therefore depends on the number of ",
-                     "survey submissions in the app"))
+      # Since all field data are submitted now
+      assertthat::assert_that(
+        length(vec_app) == 205)
 
       # Harmonise plot_id
 
@@ -246,10 +245,9 @@ get_his <- function(include_extra_plots = TRUE,
                        paste(vec_app[which(!vec_app %in% vec_his)],
                              collapse = ",  ")))
 
-        message(paste0("So far, ", length(vec_his), " plot_ids out of 208 are ",
-                       "known for WP2. This is derived from the Survey123 app ",
-                       "(harmonized) and therefore depends on the number of ",
-                       "survey submissions in the app"))
+        # Since all field data are submitted now
+        assertthat::assert_that(
+          length(vec_app) == 205)
 
         # Harmonise plot_id
 
