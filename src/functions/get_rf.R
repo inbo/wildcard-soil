@@ -95,9 +95,11 @@ get_rf <- function() {
 
   read_rf <- function(file) {
 
-    rf <- suppressMessages(read_sheet(as_id(file$id),
-                           sheet = "STAALFORMULIER",
-                           skip = 2))[-1, ] %>%
+    # STAALFORMULIER
+
+    rf_staal <- suppressMessages(read_sheet(as_id(file$id),
+                                 sheet = "STAALFORMULIER",
+                                 skip = 2))[-1, ] %>%
       rename(
         lims_project_code = Project,
         lims_sample_id = `Labo-ID`,
@@ -108,6 +110,59 @@ get_rf <- function() {
           TRUE ~ `Uitvoerder bemonstering`)) %>%
       filter(sample_id != "VeldID?") %>%
       select(lims_project_code, lims_sample_id, sample_id, institute_sampling)
+
+    # LABELFORMULIER
+
+    rf_label <- suppressMessages(read_sheet(as_id(file$id),
+                                            sheet = "LABELFORMULIER",
+                                            skip = 1))[-1, ] %>%
+      mutate(
+        # Create column only if missing
+        `Korte code` =
+          if (!"Korte code" %in% names(.)) NA_character_
+        else `Korte code`,
+        `korte code2` =
+          if (!"korte code" %in% names(.)) NA_character_
+        else `korte code`,
+        `...10` =
+          if (!"...10" %in% names(.)) NA_character_
+        else `...10`,
+        `Veld-ID kort` =
+          if (!"Veld-ID kort" %in% names(.)) NA_character_
+        else `Veld-ID kort`) %>%
+      mutate(
+        lims_label_short = coalesce(`Korte code`,
+                                    `korte code2`,
+                                    `...10`,
+                                    `Veld-ID kort`)) %>%
+      rename(
+        sample_id_labelformulier = `Veld-ID`,
+        lims_sample_id = `Labo-ID`,
+        lims_sample_id_2 = `...5` # Labocode 2 (ball-milled sample for CN)
+        ) %>%
+      filter(sample_id_labelformulier != "VeldID?") %>%
+      select(sample_id_labelformulier, lims_sample_id,
+             lims_sample_id_2, lims_label_short)
+
+    assertthat::assert_that(nrow(rf_staal) == nrow(rf_label),
+                            msg = paste0("Different nrow staalformulier vs ",
+                                         "labelformulier: '", file$rf, "'"))
+
+    assertthat::assert_that(
+      all(rf_label$lims_sample_id %in% rf_staal$lims_sample_id) &&
+        all(rf_staal$lims_sample_id %in% rf_label$lims_sample_id))
+
+    rf <- rf_staal %>%
+      left_join(rf_label,
+                by = "lims_sample_id")
+
+    assertthat::assert_that(
+      # A small mistake in this RF
+      file$rf == "V-25V006-10" ||
+      all(rf$sample_id == rf$sample_id_labelformulier))
+
+    rf <- rf %>%
+      select(-sample_id_labelformulier)
 
     return(rf)
   }
