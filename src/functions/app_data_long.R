@@ -45,7 +45,7 @@ app_data_long <- function(app_data_wide) {
     select(code, starts_with("P")) %>%
     select(code, contains("dist")) %>%
     mutate(across(matches("^P\\d+_M\\d+"), as.character)) %>%
-    # Not immediately sure what these two columns indicate
+    # These columns do not contain properties
     select(-P1_num_M36_undist_samples, -P1_num_M61_undist_samples) %>%
     pivot_longer(
       cols = matches("^P\\d+_M\\d+"),
@@ -457,7 +457,8 @@ app_data_long <- function(app_data_wide) {
       select(code, team_harmonized, globalid, res_id_harmonized,
              site_type,
              # Volume of kopecky ring
-             # (typically one ring per depth x sampling point)
+             # (typically multiple rings per depth across sampling points or
+             # per sampling point)
              vol_ring,
              starts_with("P")) %>%
       select(code, team_harmonized, globalid, res_id_harmonized,
@@ -482,7 +483,84 @@ app_data_long <- function(app_data_wide) {
                                        collapse = ","),
         count_rings = n())
     ) %>%
-    # For plots in which all M36 and M61 rings were taken from the deep
+    left_join(
+      app_data %>%
+        select(code, plot_code_simple),
+      by = "code") %>%
+    # ---
+    # Any MANUAL CORRECTIONS to the number of rings should happen here!
+    # Part 1: based on comments in the app
+    # (TO DO: later add part 2 based on feedback partners)
+    # ---
+    mutate(
+      P1_num_M36_undist_samples = case_when(
+        plot_code_simple == "AlberIT - UNIRC__24__Macchia dell'Orso__NA" ~ 3,
+        plot_code_simple == "BFNP__2122__Laerchenberg__NA" ~ 4,
+
+
+      ),
+      P1_num_M61_undist_samples = case_when(
+        plot_code_simple == "AlberIT - UNIRC__22__Monte Tranquillo__NA" ~ 3,
+        plot_code_simple == "AlberIT - UNIRC__24__Macchia dell'Orso__NA" ~ 4,
+        plot_code_simple == "BFNP__137__Mittelsteighuette__NA" ~ 5,
+        plot_code_simple == "BFNP__2122__Laerchenberg__NA" ~ 5,
+
+      )) %>%
+    # For some plots (e.g. BFNP__2122__Laerchenberg__NA),
+    # partners were unable to collect undisturbed samples at the
+    # deepest layers (M36, M61) across all sampling points due to stoniness, and
+    # instead took multiple samples from the central pit (P1). The number of P1
+    # samples taken is recorded in P1_num_M36_undist_samples and
+    # P1_num_M61_undist_samples.
+    # However, partners sometimes forgot to indicate P1 for those depths,
+    # which means that P1 is not in undist_sampling_points and count_rings,
+    # or a record for the given depth is at this point lacking.
+    # The code below corrects this:
+    # - if no record exists for M36/M61, a new row is added with P1 as the
+    #   sampling point;
+    # - if a record exists but P1 is missing, P1 is prepended to
+    #   undist_sampling_points and count_rings is incremented by 1.
+    group_by(code) %>%
+    group_modify(~ {
+      df <- .x
+
+      for (layer in c("M36", "M61")) {
+
+        p1_col <- if (layer == "M36") "P1_num_M36_undist_samples" else
+          "P1_num_M61_undist_samples"
+
+        p1_num <- df[[p1_col]][1]  # same value across rows for the plot
+
+        # Only act if P1_num is non-NA and >= 1 (i.e., they did take a sample)
+        if (is.na(p1_num) || p1_num < 1) next
+
+        row_exists <- any(df$code_layer == layer)
+
+        if (!row_exists) {
+          # Case 1: no record for this depth → add a new row ---
+          new_row <- df[1, ]  # copy metadata from first row
+          new_row$code_layer <- layer
+          new_row$undist_sampling_points <- "P1"
+          new_row$count_rings <- 1L
+          df <- bind_rows(df, new_row)
+
+        } else {
+          # Case 2: record exists but P1 not listed in
+          #         undist_sampling_points ---
+          idx <- which(df$code_layer == layer)
+          current_pts <- df$undist_sampling_points[idx]
+
+          # Only patch if non-NA and P1 not already present
+          if (!is.na(current_pts) && !grepl("P1", current_pts)) {
+            df$undist_sampling_points[idx] <- paste0("P1,", current_pts)
+            df$count_rings[idx] <- df$count_rings[idx] + 1L
+          }
+        }
+      }
+      df
+    }) %>%
+    ungroup() %>%
+    # For plots in which all or some M36 and M61 rings were taken from the deep
     # central pit, correct the number of rings based on the columns
     # P1_num_M36_undist_samples, P1_num_M61_undist_samples
     mutate(
@@ -963,7 +1041,8 @@ app_data_long <- function(app_data_wide) {
     left_join(df_sampling_points_summ,
               by = join_by(code, code_layer)) %>%
     left_join(df_rings %>%
-                select(-team_harmonized, -globalid, -res_id_harmonized),
+                select(-team_harmonized, -globalid, -res_id_harmonized,
+                       -plot_code_simple),
               by = join_by(code, code_layer)) %>%
     # Add average bedrock depth in order to update the lowest layer limit
     # of the lowest layer of the profile
