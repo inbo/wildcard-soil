@@ -8,7 +8,9 @@ get_lab_data <- function() {
   # Check: https://github.com/inbo/inbolims
 
   # Make connection with the database
-  connection <- lims_connect()
+  if (!exists("connection", envir = globalenv())) {
+    connection <- lims_connect()
+  }
 
   # We need the rf_overview table
   source("./src/functions/get_rf.R")
@@ -275,6 +277,7 @@ get_lab_data <- function() {
   # Compile all RFs ----
 
   data_lab <- NULL
+  rfs_no_results <- NULL
 
   for (rf_i in rfs) {
 
@@ -290,6 +293,13 @@ get_lab_data <- function() {
                                  project = c(rf_i),
                                  sql_template = "default",
                                  show_query = FALSE)
+
+    if (nrow(data_lab_i) == 0) {
+
+      rfs_no_results <- c(rfs_no_results, rf_i)
+
+      next
+    }
 
     # Remove rows from duplicate samples (10 % of the samples is measured
     # twice for internal quality control of the analytical lab)
@@ -366,6 +376,9 @@ get_lab_data <- function() {
                           datax_lab_i)
 
   }
+
+cat("\nNone of the lab results are ready for the following RFs:\n")
+cat(rfs_no_results)
 
 return(as_tibble(data_lab))
 
