@@ -159,10 +159,31 @@ get_app_data <- function(path = NULL) {
           if (!"humus_form2" %in% names(.)) NA_character_
         else humus_form2,
         surface_frame =
-          if (!"surface_frame" %in% names(.)) .0625 else surface_frame,
+          if (!"surface_frame" %in% names(.)) NA_real_ # .0625
+        else surface_frame,
+        surface_ff_frame =
+          if (!"Surface area of forest floor frame used (m2)" %in%
+              names(.)) NA_real_
+        else `Surface area of forest floor frame used (m2)`,
         hor_accuracy_man =
           if (!"hor_accuracy_man" %in% names(.)) NA_real_
-        else hor_accuracy_man
+        else hor_accuracy_man,
+        no_undist_m36 =
+          if (!"Number of taken undisturbed samples from M36 layer" %in%
+              names(.)) NA_real_
+        else `Number of taken undisturbed samples from M36 layer`,
+        no_undist_m61 =
+          if (!"Number of taken undisturbed samples from M61 layer" %in%
+              names(.)) NA_real_
+        else `Number of taken undisturbed samples from M61 layer`,
+        P1_num_M36_undist_samples =
+          if (!"P1_num_M36_undist_samples" %in%
+              names(.)) NA_real_
+        else P1_num_M36_undist_samples,
+        P1_num_M61_undist_samples =
+          if (!"P1_num_M61_undist_samples" %in%
+              names(.)) NA_real_
+        else P1_num_M61_undist_samples
         ) %>%
       # UTC time zone (Coordinated Universal Time)
       mutate(
@@ -183,12 +204,25 @@ get_app_data <- function(path = NULL) {
                              as.character(x)),
         latitude = as.numeric(str_replace(latitude, ",", ".")),
         longitude = as.numeric(str_replace(longitude, ",", ".")),
-        hor_accuracy = coalesce(hor_accuracy_aut,
-                                hor_accuracy_man),
+        hor_accuracy = coalesce(as.numeric(hor_accuracy_aut),
+                                as.numeric(hor_accuracy_man)),
         humus_form = coalesce(humus_form,
                               humus_form1,
-                              humus_form2)) %>%
-      select(-hor_accuracy_aut, -hor_accuracy_man) %>%
+                              humus_form2),
+        P1_num_M36_undist_samples = coalesce(P1_num_M36_undist_samples,
+                                             no_undist_m36),
+        P1_num_M61_undist_samples = coalesce(P1_num_M36_undist_samples,
+                                             no_undist_m61),
+        surface_frame = coalesce(as.numeric(surface_frame),
+                                 as.numeric(surface_ff_frame))
+        ) %>%
+      select(-any_of(c("hor_accuracy_aut", "hor_accuracy_man",
+                       "no_undist_m36", "no_undist_m61",
+                       "Number of taken undisturbed samples from M36 layer",
+                       "Number of taken undisturbed samples from M61 layer",
+                       "surface_ff_frame",
+                       "Surface area of forest floor frame used (m2)"))
+             ) %>%
       # GlobalID should not have curly brackets and capital letters
       # To make the link with the identification_df
       mutate(globalid = str_remove_all(globalid, "[\\{\\}]") %>%
@@ -311,13 +345,10 @@ get_app_data <- function(path = NULL) {
     relocate(hor_accuracy, .after = longitude) %>%
     relocate(wrb_qualifier_1, wrb_qualifier_suppl,
              .after = wrb_ref_soil_group) %>%
-    # Manually fix one inconsistency that was detected on 2025-07-31
-    # TO DO: update this with the correct value from the partner (WSL)
-    # Or actually, better implement this earlier in this script (right after
-    # app_data_wide is first imported)
+    # Manually fix one inconsistency following feedback WSL
     mutate(
       P3_ofh_thickness = case_when(
-        code == "CH-WSL-30-NA-KF 2" ~ "2",
+        code == "CH-WSL-30-NA-KF 2" ~ "2.5",
         TRUE ~ P3_ofh_thickness)) %>%
     # Convert columns that should be numeric to numerics
     mutate(across(c(
@@ -407,13 +438,16 @@ get_app_data <- function(path = NULL) {
 
 
   # Deduplicate the app data
-  # (e.g., it seems like LWF 60_a is present twice in the app data)
+  # (in the past, some plots were submitted multiple times in the app data.
+  #  Note: duplicated records were removed in advancefrom identification_df
+  #  following instructions by the partners, and should therefore be absent)
 
   vec_dupl <- app_data_wide$plot_code_simple[
-    duplicated(app_data_wide$plot_code_simple) &
-      !grepl("IBER", app_data_wide$institute_sampling)]
+    duplicated(app_data_wide$plot_code_simple)]
 
   if (!identical(vec_dupl, character(0))) {
+
+    message("Duplicated plots (records) present in app data!\n")
 
     app_data_wide <- bind_rows(
       # Records that are fine (not duplicated)
