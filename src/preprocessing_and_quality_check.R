@@ -123,12 +123,23 @@ cat("Switch on VPN of INBO.\n")
 source("./src/functions/get_lab_data.R")
 data_lab <- get_lab_data()
 
-data_lab <- data_lab %>%
+if (nrow(data_lab) > 0) {
+
+  data_lab <- data_lab %>%
   # Add sample_id_sample, plot_code_simple, institute_sampling,
   # sample_code, code_layer
   # At the moment it's not possible to test this using 2025 lab data, but
   # it should work out (since sample_id should be the same like in the WBLs)
   add_ids_simple()
+}
+
+# Note:
+# LWF__65_a__Friedergries__NA OFH_carbon has been retaken during the second
+# sampling campaign by LWF, as the first sample contained a lot of roots
+# (which were removed before lab analysis)
+# That original sample is named "DE__LWF__65_a__NA__NA__OFH_carbon" in the
+# RF (V-25V006-04), while the new (better) sample is named
+# "DE__LWF__65_a__NA__NA__OFH_carbon_b" → better to proceed with these results
 
 
 
@@ -143,7 +154,9 @@ data_lab <- data_lab %>%
 source("./src/functions/get_sample_lists.R")
 samples <- get_sample_lists()
 
-
+assertthat::assert_that(length(which(is.na(samples$sample_id_simple))) == 0,
+                        msg = paste0("Some NAs are present in column ",
+                                     "'sample_id_simple'."))
 
 
 
@@ -239,7 +252,7 @@ dist_masses <-
       filter(institute_sampling != "INBO") %>%
       mutate(mass_after = mass_after_net,
              mass_before = mass_before_net) %>%
-      select(plot_code_simple,
+      select(plot_code_simple, sample_id_simple,
              code_layer, mass_before, mass_after) %>%
       mutate(
         mass_dry_leaves = NA_real_,
@@ -249,7 +262,8 @@ dist_masses <-
     dist_harm %>%
       # Part 1 INBO: Create OL subtotals
       filter(code_layer == "OL") %>%
-      select(plot_code_simple, sample_code, mass_after_net) %>%
+      select(plot_code_simple, sample_id_simple,
+             sample_code, mass_after_net) %>%
       pivot_wider(
         names_from = sample_code,
         values_from = mass_after_net,
@@ -274,7 +288,8 @@ dist_masses <-
               sum(mass_before_net, na.rm = TRUE),
               NA_real_)),
         by = "plot_code_simple") %>%
-      select(plot_code_simple, code_layer, mass_before, mass_after,
+      select(plot_code_simple, sample_id_simple,
+             code_layer, mass_before, mass_after,
              mass_dry_leaves, mass_dry_twigs_medium,
              mass_dry_twigs_small) %>%
       # Part 2 INBO: Bind with non-OL rows
@@ -285,7 +300,7 @@ dist_masses <-
           filter(!grepl("BackUp", sample_id)) %>%
           mutate(mass_after = mass_after_net,
                  mass_before = mass_before_net) %>%
-          select(plot_code_simple,
+          select(plot_code_simple, sample_id_simple,
                  code_layer, mass_before, mass_after) %>%
           mutate(
             mass_dry_leaves = NA_real_,
@@ -298,16 +313,18 @@ dist_masses <-
       mutate(
         mass_dry_partner =
           rowSums(across(starts_with("mass_dry_")), na.rm = TRUE)) %>%
-      select(plot_code_simple, code_layer, mass_dry_partner,
-             mass_dry_leaves_ol, mass_dry_twigs_medium_ol,
+      select(plot_code_simple, code_layer, sample_id_simple,
+             mass_dry_partner, mass_dry_leaves_ol, mass_dry_twigs_medium_ol,
              mass_dry_twigs_small_ol),
-    by = join_by("plot_code_simple", "code_layer")
+    by = join_by("plot_code_simple", "code_layer", "sample_id_simple")
   ) %>%
   mutate(code_layer = factor(code_layer,
                              levels = code_layer_levels)) %>%
   # Arrange by plot and layer
   arrange(plot_code_simple, code_layer) %>%
   relocate(mass_dry_partner, .before = mass_before) %>%
+  # Combine the OL fraction columns
+  # (since those for Belgium are in a different column than the others)
   mutate(
     mass_dry_leaves = coalesce(mass_dry_leaves,
                                mass_dry_leaves_ol),
@@ -335,10 +352,20 @@ View(dist_masses)
 # Combine with df_layers (layer-specific data Survey123 app)
 
 df_layers <- df_layers %>%
-  left_join(dist_masses,
+  left_join(dist_masses %>%
+              # We need to use the masses of the original sample
+              # because we do not have the mass across five sampling points
+              # of the newest sample, while the fresh subsample must have had
+              # a different moisture content than the original.
+              # In other words, we only use the new sample (b)
+              # for the lab analyses.
+              filter(sample_id_simple != "LWF__65_a__NA__OFH_carbon_b"),
             by = join_by("plot_code_simple", "code_layer")) %>%
   relocate(mass_dry_partner, mass_before, mass_after,
-           .after = dist)
+           .after = dist) %>%
+  mutate(code_layer = factor(code_layer,
+                             levels = code_layer_levels)) %>%
+  arrange(institute_sampling, plot_code_simple, code_layer)
 
 # Check if you do not see any weird things in the masses of the forest floor
 # (especially OFH):
