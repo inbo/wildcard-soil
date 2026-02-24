@@ -92,15 +92,26 @@ app_data_long <- function(app_data_wide) {
     # (more frequently reported data are first)
     group_by(code, code_layer) %>%
     reframe(
+      # All sampling points ---
       dist = if (all(is.na(properties))) {
         NA_character_
       } else {
-        properties %>%
-          na.omit() %>%
-          table() %>%
-          sort(decreasing = TRUE) %>%
-          names() %>%
+        tab <- table(na.omit(properties))
+        tab <- sort(tab, decreasing = TRUE)
+        paste0(names(tab), " (", as.integer(tab), ")") %>%
           paste(collapse = ", ")
+      },
+      # Only P1–P5 ---
+      properties_five_pts = {
+        props_five <- properties[sampling_point %in% paste0("P", 1:5)]
+        if (length(props_five) == 0 || all(is.na(props_five))) {
+          NA_character_
+        } else {
+          tab <- table(na.omit(props_five))
+          tab <- sort(tab, decreasing = TRUE)
+          paste0(names(tab), " (", as.integer(tab), ")") %>%
+            paste(collapse = ", ")
+        }
       }
     ) %>%
     ungroup() %>%
