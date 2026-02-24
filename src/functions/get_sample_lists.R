@@ -270,6 +270,15 @@ get_sample_lists <- function() {
         }
       })) %>%
     ungroup() %>%
+    # Rename sample_id_simple for the second sample of
+    # "LWF__65_a__Friedergries__NA OFH"
+    mutate(
+      sample_id_simple = case_when(
+        composed_site_id == "LWF__65_a__Friedergries__NA" &
+          sample_code_harm == "OFH_carbon" &
+          date_survey == as.Date("2025-09-08") ~
+          "LWF__65_a__NA__OFH_carbon_b",
+        TRUE ~ sample_id_simple)) %>%
     relocate(plot_code_harm, sample_id_harm, reserve_name,
              .before = sample_id) %>%
     mutate(

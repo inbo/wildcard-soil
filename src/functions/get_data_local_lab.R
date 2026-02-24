@@ -195,6 +195,16 @@ get_data_local_lab <- function() {
       ~ as.numeric(gsub(",", ".", .x))
     ))
 
+  # Add a record for the newly taken sample of LWF__65_a__Friedergries__NA OFH
+
+  all_local_lab <- bind_rows(
+    all_local_lab,
+    all_local_lab %>%
+      filter(sample_id_simple == "LWF__65_a__NA__OFH_carbon") %>%
+      mutate(
+        sample_id_simple = "LWF__65_a__NA__OFH_carbon_b",
+        mass_dry_ofh = 1150))
+
 
   return(all_local_lab)
 
