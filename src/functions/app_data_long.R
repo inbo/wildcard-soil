@@ -740,13 +740,13 @@ app_data_long <- function(app_data_wide) {
       # How many bedrock depths are filled in?
       n_filled = sum(!is.na(c_across(matches("^P[1-5]_depth_bedrock$")))),
       # Are all non-missing bedrock depths ≤ 30?
+      # (This is also TRUE for records with only NAs - can be ignored)
       all_shallow = all(c_across(matches("^P[1-5]_depth_bedrock$"))[!is.na(
         c_across(matches("^P[1-5]_depth_bedrock$")))] <= 30),
       # How many bedrock depths are missing?
       n_missing = sum(is.na(c_across(matches("^P[1-5]_depth_bedrock$")))),
       # Suspicious if at least 2 bedrock depths are filled in and at least 1
       # is NA, with all of the filled bedrock depths being shallower than 30 cm?
-      #
       flag_suspicious = n_filled >= 2 & all_shallow & n_missing > 0,
       # Most shallow bedrock depth reported
       depth_bedrock_min =
@@ -780,11 +780,19 @@ app_data_long <- function(app_data_wide) {
         # Else, take the average P1-5 (assuming NA equals 100)
         TRUE ~
           round(mean(replace_na(c_across(matches("^P[1-5]_depth_bedrock$")),
-                                100))))) %>%
+                                100)))),
+      depth_bedrock_compiled = paste(
+        as.character(round(c_across(matches("^P[1-9]_depth_bedrock$")))),
+        collapse = ",")
+      ) %>%
     ungroup()
 
   # TO DO: Maybe it would be good to compare this with the pictures from the
   # field (especially for stony sites)
+
+  # TO DO: Check depths (now depth_bottom is sometimes shallower than
+  # depth_top), e.g., "UL__4__Ravna gora__NA"
+
 
 
   ### INCONSISTENCY 5 ----
@@ -961,7 +969,8 @@ app_data_long <- function(app_data_wide) {
     # of the lowest layer of the profile
     left_join(df_bedrock %>%
                 select(code,
-                       depth_bedrock, depth_bedrock_min, depth_bedrock_max),
+                       depth_bedrock, depth_bedrock_min, depth_bedrock_max,
+                       depth_bedrock_compiled),
               by = "code") %>%
     relocate(tamass, .before = dist) %>%
     relocate(
@@ -1027,6 +1036,7 @@ app_data_long <- function(app_data_wide) {
     relocate(depth_top, depth_bottom, layer_number,
              thickness, thickness_min, thickness_max,
              depth_bedrock, depth_bedrock_min, depth_bedrock_max,
+             depth_bedrock_compiled,
              .after = code_layer)
 
 
