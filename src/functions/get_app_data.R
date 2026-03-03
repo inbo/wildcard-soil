@@ -375,6 +375,10 @@ get_app_data <- function(path = NULL) {
 
 
   app_data_wide <- app_data_wide %>%
+    mutate(
+      site_type = case_when(
+        site_type %in% c("Standart site", "standart") ~ "Standard site",
+        site_type %in% c("Stony site", "stony_site") ~ "Stony site")) %>%
     left_join(
       # Add harmonised plot identifiers
       identification_df %>%
