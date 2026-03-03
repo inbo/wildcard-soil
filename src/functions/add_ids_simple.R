@@ -135,6 +135,17 @@ add_ids_simple <- function(data_frame,
           sample_id_simple),
         # 3. Remove country code
         sample_id_simple = str_remove(sample_id_simple, "^[^_]+__"),
+        # There is an issue with plot "NWFVA__03-014__Huenstollen__NA"
+        # for which the code above replaces for example
+        #            "DE__NWFVA__03-014__NA__284_1__OFH_carbon"
+        #         by "DE__NWFVA__03-014__284_1__OFH_carbon"
+        # instead of "DE__NWFVA__03-014__NA__OFH_carbon" (as it should)
+        # This should be corrected (for this plot only)
+        sample_id_simple = ifelse(
+          grepl("NWFVA__03-014", sample_id_simple) &
+            grepl("284_1", sample_id_simple),
+          sub("284_1", "NA", sample_id_simple),
+          sample_id_simple),
         # Add plot_code for INBO records, which is necessary to link with
         # plots_belgium (in order to make plot_code_simple)
         plot_code = ifelse(
