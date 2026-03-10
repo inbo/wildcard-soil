@@ -55,7 +55,7 @@ if (!exists("his", envir = globalenv())) {
   his <- get_his()
 }
 
-# Get sample_lists ----
+# Get sample_lists
 
 source("./src/functions/get_sample_lists.R")
 
@@ -597,8 +597,131 @@ write.table(s_undist, "clipboard", sep = "\t",
 # in the beginning of this script
 
 
+## 4.3. Add columns to WBL disturbed ----
+
+# Extra columns (as requested by sample pretreatment colleagues March 2026):
+# - Column with the LIMS sample ID of the second subsample per mother sample
+#   (i.e., the sample with ball mill treatment for CN analysis)
+# - Column with the code placed on the labels by the analytical lab colleagues
+
+dist <- read_sheet(as_id(id_dist),
+                   skip = 1)
+
+source("./src/functions/get_rf.R")
+
+rf_all <- get_rf()
+glimpse(rf_all)
+
+dist_add <- dist %>%
+  rename(
+    lims_sample_id = `LabSampleID LIMS`,
+    # sample_id does not always correspond anymore because of updated
+    # plot_id
+    sample_id = `sample_id (unieke veldcode uit Survey123 app)`) %>%
+  select(lims_sample_id, sample_id, reserve_name) %>%
+  left_join(
+    rf_all %>%
+      rename(sample_id_check = sample_id) %>%
+      select(sample_id_check, lims_sample_id, lims_sample_id_2,
+             lims_label_short),
+    by = "lims_sample_id") %>%
+  select(sample_id_check, lims_sample_id_2, lims_label_short)
+
+
+# Copy to clipboard and paste in WBL-geroerd (disturbed)
+
+write.table(dist_add[, "lims_sample_id_2"], "clipboard", sep = "\t",
+            row.names = FALSE, col.names = FALSE,
+            na = "")
+
+write.table(dist_add[, "lims_label_short"], "clipboard", sep = "\t",
+            row.names = FALSE, col.names = FALSE,
+            na = "")
 
 
 
+
+
+
+
+
+## 4.4. Add columns to WBL undisturbed ----
+
+# Extra columns to help with validation of the recorded masses by sample
+# pretreatment colleagues March 2026):
+# - Column (logical) indicating whether or not coarse fragments were observed
+#   in the field for the given depth by the partner (to help with the
+#   decision whether or not sieving of the dried sample is necessary)
+# - Column with the total volume of all (kopecky) rings (recorded by the
+#   partner) the given sample is representing.
+# - Column with the field-moist mass recorded in the field by the partner
+
+undist <- read_sheet(as_id(id_undist),
+                     skip = 1)
+
+if (!exists("df_layers", envir = globalenv())) {
+
+  source("./src/functions/get_app_data.R")
+  app_data_wide <- get_app_data()
+
+  source("./src/functions/app_data_long.R")
+  df_layers <- app_data_long(app_data_wide)
+
+}
+
+source("./src/functions/safe_numeric_convert.R")
+source("./src/functions/add_ids_simple.R")
+
+undist_add <- undist %>%
+  rename(
+    sample_id = `sample_id (unieke veldcode uit Survey123 app)`) %>%
+  select(sample_id) %>%
+  # Add sample_id_sample, plot_code_simple, institute_sampling,
+  # sample_code, code_layer
+  # (only works for records from 2025, not for those from the 2024 test)
+  # Keep row order the same!
+  mutate(.row = row_number()) %>%
+  {
+    valid   <- filter(., !grepl("^WILDCARD2024_", sample_id))
+    invalid <- filter(.,  grepl("^WILDCARD2024_", sample_id))
+
+    bind_rows(
+      add_ids_simple(valid),
+      invalid
+    )
+  } %>%
+  arrange(.row) %>%
+  select(-.row) %>%
+  # Add data app
+  left_join(df_layers %>%
+              select(plot_code_simple, code_layer,
+                     P1_coaf_2mm, P1_coaf_50mm,
+                     vol_ring, count_rings,
+                     bulk_den),
+            by = join_by("plot_code_simple", "code_layer")) %>%
+  relocate(sample_code, sample_id_simple, .after = last_col()) %>%
+  # Derived variables
+  mutate(
+    stones = case_when(
+      (!is.na(P1_coaf_2mm) & P1_coaf_2mm > 1) |
+      (!is.na(P1_coaf_50mm) & P1_coaf_50mm > 5) ~ "Ja!",
+      TRUE ~ "Nee"))
+
+glimpse(undist_add)
+
+
+# Copy to clipboard and paste in WBL-ongeroerd (undisturbed)
+
+write.table(undist_add[, "stones"], "clipboard", sep = "\t",
+            row.names = FALSE, col.names = FALSE,
+            na = "")
+
+write.table(undist_add[, "vol_total"], "clipboard", sep = "\t",
+            row.names = FALSE, col.names = FALSE,
+            na = "")
+
+write.table(undist_add[, "bulk_den"], "clipboard", sep = "\t",
+            row.names = FALSE, col.names = FALSE,
+            na = "")
 
 
