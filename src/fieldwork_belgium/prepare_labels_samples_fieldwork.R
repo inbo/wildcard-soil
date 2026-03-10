@@ -740,6 +740,33 @@ data <-
   arrange(id_sample_pretreatment, sample_code)
 
 
+# New version Feb 2026
+# (based on sample lists (WBL undisturbed) that are now complete)
+
+institutes <- undist_harm %>%
+  filter(is.na(mass_before)) %>%
+  distinct(institute_sampling) %>%
+  filter(institute_sampling != "INBO") %>%
+  pull(institute_sampling)
+
+data <- undist_harm %>%
+  filter((is.na(mass_before) & institute_sampling != "INBO") |
+           institute_sampling %in% c(institutes, "NW-FVA")) %>%
+  left_join(
+    undist %>%
+      rename(staal_id_pretrt = `staal_ID voorbehandeling`,
+             sample_id = `sample_id (unieke veldcode uit Survey123 app)`) %>%
+      select(sample_id, staal_id_pretrt),
+    by = "sample_id") %>%
+  left_join(his %>%
+              select(plot_code_simple, plot_code, reserve_name),
+            by = "plot_code_simple") %>%
+  select(staal_id_pretrt,
+         plot_code,
+         reserve_name,
+         institute_sampling)
+
+
 ## Create stickers ----
 
 # Function to create one sticker
@@ -807,9 +834,17 @@ while (dev.cur() > 1) dev.off()
 
 ## Different pdfs per partner and dist/undist ----
 
-for (inst in unique(data$institute_sampling)) {
+for (inst in unique(c(institutes, "NW-FVA"))) {
+
+  if (inst == "USV") {
+    next
+  }
 
   for (type in c("disturbed", "undisturbed")) {
+
+    if (type == "disturbed") {
+      next # Version Feb 2026
+    }
 
     if (type == "disturbed") {
 
@@ -824,12 +859,26 @@ for (inst in unique(data$institute_sampling)) {
 
     if (type == "undisturbed") {
 
-      labels <- pmap(
-        data %>%
-          filter(institute_sampling == inst) %>%
-          filter(grepl("^BD-", staal_id_pretrt)) %>%
-          select(staal_id_pretrt, plot_code, reserve_name),
-        make_label_pretrt)
+      if (inst == "UNITBV") {
+
+        labels <- pmap(
+          data %>%
+            filter(institute_sampling == inst |
+                     # Add USV to UNITBV since just one plot
+                     institute_sampling == "USV") %>%
+            filter(grepl("^BD-", staal_id_pretrt)) %>%
+            select(staal_id_pretrt, plot_code, reserve_name),
+          make_label_pretrt)
+
+      } else {
+
+        labels <- pmap(
+          data %>%
+            filter(institute_sampling == inst) %>%
+            filter(grepl("^BD-", staal_id_pretrt)) %>%
+            select(staal_id_pretrt, plot_code, reserve_name),
+          make_label_pretrt)
+      }
 
     }
 
@@ -839,7 +888,8 @@ for (inst in unique(data$institute_sampling)) {
 
   # Export to PDF
 
-  pdf(paste0("./output/sample_pretreatment/pretreatment_labels_",
+  pdf(paste0("./output/sample_pretreatment/20260226_wildcard_labels_to_print/",
+             "pretreatment_labels_",
              inst, "_",
              case_when(
                type == "disturbed" ~ "C",
