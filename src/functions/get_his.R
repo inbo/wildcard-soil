@@ -1,6 +1,7 @@
 
 get_his <- function(include_extra_plots = TRUE,
                     add_plot_ids_from_app = TRUE,
+                    path_app_data = NULL,
                     source = "his_ids") {
 
   stopifnot(require("tidyverse"),
@@ -21,11 +22,80 @@ get_his <- function(include_extra_plots = TRUE,
   # Source URLs of sensitive Google Drive links
   source("./data/sensitive_metadata/google_drive_links.R")
 
-  if (add_plot_ids_from_app == TRUE &&
-      !exists("app_data_wide", envir = globalenv())) {
 
-    source("./src/functions/get_app_data.R")
-    app_data_wide <- get_app_data()
+
+
+
+  # Get harmonised plot_ids from Survey123 app
+
+  if (add_plot_ids_from_app == TRUE) {
+
+    # Root folder of Survey123 app data
+
+    path <- "./data/raw_data/app_data/Field-data/"
+
+    if (is.null(path_app_data)) {
+
+      assertthat::assert_that(
+        file.exists(path),
+        msg = paste0("Default path (Field-data) with Survey123 app data ",
+                     "(to retrieve plot_ids) does not exist. ",
+                     "Specify root folder path as input."))
+
+      dirs <- list.dirs(path, recursive = FALSE, full.names = TRUE)
+
+      if (any( "./data/raw_data/app_data/Field-data/Field-data" %in% dirs)) {
+        path <-  "./data/raw_data/app_data/Field-data/Field-data/"
+      }
+
+    } else {
+
+      assertthat::assert_that(
+        file.exists(path_app_data),
+        msg = paste0("Path '", path_app_data, "' does not exist."))
+
+      path <- path_app_data
+
+    }
+
+    # Search for identification file with harmonised plot identifiers
+
+    excel_files <- list.files(
+      path = path,
+      pattern = "\\.xlsx?$",
+      recursive = TRUE,
+      full.names = TRUE)
+
+    identification_df_path <-
+      excel_files[which(grepl("identification_sites", excel_files))]
+
+    assertthat::assert_that(file.exists(identification_df_path),
+                            msg = paste0("Identification file plots Survey123 ",
+                                         "app not found."))
+
+    identification_df <-
+      suppressMessages(read_excel(identification_df_path)) %>%
+      # Remove the empty column
+      {
+        df <- .
+        if ("...10" %in% names(df) && all(is.na(df$`...10`))) {
+          select(df, -`...10`)
+        } else {
+          df
+        }
+      } %>%
+      filter(grepl("wp2", `WP2 or WP3 site`, ignore.case = TRUE)) %>%
+      filter(!is.na(GlobalID)) %>%
+      # Filter out test survey from INBO 2024
+      filter(!(team == "INBO" & grepl("2024", date_time))) %>%
+      mutate(
+        composed_site_id = paste(
+          team_harmonized,
+          res_id_harmonized,
+          region_harmonized,
+          site_id_harmonized,
+          sep = "__")) %>%
+      select(composed_site_id, plot_id_harmonized)
 
   }
 
@@ -44,18 +114,15 @@ get_his <- function(include_extra_plots = TRUE,
 
       his <- his %>%
         left_join(
-          app_data_wide %>%
-            filter(wp == "WP2") %>%
-            distinct(composed_site_id, .keep_all = TRUE)%>%
-            select(composed_site_id, plot_id_harmonized),
+          identification_df %>%
+            distinct(composed_site_id, .keep_all = TRUE),
           by = "composed_site_id")
 
       # Make sure that the number of HIS with known plot_id is the same like
       # the number of surveys that has been submitted in the Survey123 app
       # for WP2
 
-      vec_app <-
-        unique(app_data_wide$composed_site_id[which(app_data_wide$wp == "WP2")])
+      vec_app <- unique(identification_df$composed_site_id)
       vec_his <-
         unique(his$composed_site_id[which(!is.na(his$plot_id_harmonized))])
 
@@ -219,18 +286,14 @@ get_his <- function(include_extra_plots = TRUE,
       if (add_plot_ids_from_app == TRUE) {
 
         his <- his %>%
-          left_join(
-            app_data_wide %>%
-              filter(wp == "WP2") %>%
-              select(composed_site_id, plot_id_harmonized),
-            by = "composed_site_id")
+          left_join(identification_df,
+                    by = "composed_site_id")
 
         # Make sure that the number of HIS with known plot_id is the same like
         # the number of surveys that has been submitted in the Survey123 app
         # for WP2
 
-        vec_app <-
-          app_data_wide$composed_site_id[which(app_data_wide$wp == "WP2")]
+        vec_app <- identification_df$composed_site_id
         vec_his <- his$composed_site_id[which(!is.na(his$plot_id_harmonized))]
 
         assertthat::assert_that(
