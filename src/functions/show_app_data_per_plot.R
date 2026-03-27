@@ -66,6 +66,28 @@ show_app_data_per_plot <- function(plot_code_simple = NULL,
     his <- get("his", envir = globalenv())
   }
 
+  # Find the matching plot_code_simple if needed
+  # (Sometimes easier if you can just type a part of plot_code_simple)
+
+  ind <- which(plot_code_simple == his$plot_code_simple)
+
+  if (identical(ind, integer(0))) {
+
+    ind <- which(grepl(plot_code_simple, his$plot_code_simple,
+                       ignore.case = TRUE))
+
+    assert_that(!identical(ind, integer(0)),
+                msg = "No matching 'plot_code_simple' found.")
+
+    assert_that(length(ind) == 1,
+                msg = "Multiple matches for 'plot_code_simple' found.")
+
+    plot_code_simple_orig <- plot_code_simple
+    plot_code_simple <- his$plot_code_simple[ind]
+
+  }
+
+
   for (plot_code_simple_i in unique(his$plot_code_simple)) {
 
     # If all plots have to be looped (continue_loop_plots == TRUE):
@@ -79,6 +101,16 @@ show_app_data_per_plot <- function(plot_code_simple = NULL,
          which(his$plot_code_simple == plot_code_simple))) {
       next
     }
+
+    # If plot_code_simple is a vector of multiple codes,
+    # only check the plots in the vector (regardless of 'continue_loop_plots')
+
+    if (!is.null(plot_code_simple) &&
+        length(plot_code_simple) > 1 &
+        !(plot_code_simple_i %in% plot_code_simple)) {
+      next
+    }
+
 
     # If all plots do not have to be looped (i.e., just show the results
     # for the input plot_code_simple)
@@ -107,17 +139,35 @@ show_app_data_per_plot <- function(plot_code_simple = NULL,
     cat("---------------------------\n\n")
 
 
-    df_layers_i <- df_layers %>%
+    # Assert that the source files exist in the Global Environment
+
+    assert_that(exists("df_layers", envir = globalenv()),
+                msg = paste0("Dataframe 'df_layers' was not found in the ",
+                             "Global Environment. Please run functions ",
+                             "'get_app_data()' and 'app_data_long()'."))
+
+    assert_that(exists("df_plot", envir = globalenv()),
+                msg = paste0("Dataframe 'df_plot' was not found in the ",
+                             "Global Environment. Please run functions ",
+                             "'get_app_data()' and 'app_data_long()'."))
+
+    assert_that(exists("df_sampling_points", envir = globalenv()),
+                msg = paste0("Dataframe 'df_sampling_points' was not found ",
+                             "in the Global Environment. Please run functions ",
+                             "'get_app_data()' and 'app_data_long()'."))
+
+    df_layers_i <- get("df_layers", envir = globalenv()) %>%
       filter(plot_code_simple == plot_code_simple_i)
 
-    df_plot_i <- df_plot %>%
+    df_plot_i <- get("df_plot", envir = globalenv()) %>%
       filter(plot_code_simple == plot_code_simple_i)
 
-    df_app_i <- app_data_wide %>%
+    df_sampling_points_i <- get("df_sampling_points", envir = globalenv()) %>%
       filter(plot_code_simple == plot_code_simple_i)
 
-
-    cat(paste0("Site type: ", df_plot_i$site_type, "\n"))
+    cat(paste0("Site type:           ", df_plot_i$site_type, "\n"))
+    cat(paste0("WRB Ref Soil Group:  ", df_plot_i$wrb_ref_soil_group, "\n"))
+    cat(paste0("Humus form:          ", df_plot_i$humus_form, "\n\n"))
 
     cat(paste0("General remarks:\n-", df_plot_i$other_remarks, "\n-",
                df_plot_i$other_observtn, "\n\n"))
@@ -166,7 +216,8 @@ show_app_data_per_plot <- function(plot_code_simple = NULL,
         pull(line) %>%
         cat(sep = "\n")
 
-      cat(paste0("Bedrock depths: ", df_layers_i$depth_bedrock_compiled[1], "\n"))
+      cat(paste0("Bedrock depths: ",
+                 df_layers_i$depth_bedrock_compiled[1], "\n"))
 
 
       ## Remarks disturbed samples/properties ----
@@ -174,31 +225,22 @@ show_app_data_per_plot <- function(plot_code_simple = NULL,
 
       cat("\n\nREMARKS DISTURBED / PROPERTIES\n\n")
 
-      df_plot_i %>%
-        select(contains("notes_dist_samples")) %>%
-        pivot_longer(everything(),
-                     names_to = "name",
-                     values_to = "value") %>%
-        mutate(line = paste0(name, ": ", value)) %>%
+      df_sampling_points_i %>%
+        mutate(line = paste0(p_id, "_notes_dist_samples: ", notes_dist)) %>%
         pull(line) %>%
         cat(sep = "\n")
 
-      df_plot_i %>%
-        select(contains("remarks_sample")) %>%
-        pivot_longer(everything(),
-                     names_to = "name",
-                     values_to = "value") %>%
-        mutate(line = paste0(name, ": ", value)) %>%
+      df_layers_i %>%
+        filter(grepl("^M", code_layer)) %>%
+        mutate(line = paste0(tolower(code_layer), "_remarks_dist: ",
+                             remarks_sample_dist)) %>%
         pull(line) %>%
         cat(sep = "\n")
 
-      df_app_i %>%
-        select(contains("carbon_check")) %>%
-        select(-contains("OFH")) %>%
-        pivot_longer(everything(),
-                     names_to = "name",
-                     values_to = "value") %>%
-        mutate(line = paste0(name, ": ", value)) %>%
+      df_layers_i %>%
+        filter(grepl("^M", code_layer)) %>%
+        mutate(line =
+                 paste0(tolower(code_layer), "_dist_check: ", dist_check)) %>%
         pull(line) %>%
         cat(sep = "\n")
 
@@ -217,42 +259,37 @@ show_app_data_per_plot <- function(plot_code_simple = NULL,
                P1_num_M36_undist_samples,
                P1_num_M61_undist_samples) %>%
         filter(grepl("^M", code_layer)) %>%
+        rename_with(~ gsub("_samples", "", .x)) %>%
         mutate(
           # Quick bulk density calculation for the total (incl. stones etc)
           # and field-moist soil
           bulk_density_moist =
             round(1E-3 * bulk_den / # convert from g to kg
-                    (count_rings * vol_ring * 1E-6))) %>% # convert from cm3 to m3
+                    (count_rings * vol_ring * 1E-6)) # convert from cm3 to m3
+          ) %>%
         print(n = Inf)
 
       cat(paste0("\nBulk density remark: ",
                  df_plot_i$remarks_bulk_den_sample, "\n\n"))
 
 
-      df_plot_i %>%
-        select(contains("notes_bulk_den")) %>%
-        pivot_longer(everything(),
-                     names_to = "name",
-                     values_to = "value") %>%
-        mutate(line = paste0(name, ": ", value)) %>%
+      df_sampling_points_i %>%
+        filter(p_id %in% paste0("P", 1:5)) %>%
+        mutate(line = paste0(p_id, "_notes_bulk_den: ", notes_bulk_den)) %>%
         pull(line) %>%
         cat(sep = "\n")
 
-      df_app_i %>%
-        select(contains("reason_bulk_den")) %>%
-        pivot_longer(everything(),
-                     names_to = "name",
-                     values_to = "value") %>%
-        mutate(line = paste0(name, ": ", value)) %>%
+      df_sampling_points_i %>%
+        filter(p_id %in% paste0("P", 1:5)) %>%
+        mutate(line = paste0(p_id, "_reason_bulk_den: ", reason_bulk_den)) %>%
         pull(line) %>%
         cat(sep = "\n")
 
-      df_app_i %>%
-        select(contains("bulk_den_check")) %>%
-        pivot_longer(everything(),
-                     names_to = "name",
-                     values_to = "value") %>%
-        mutate(line = paste0(name, ": ", value)) %>%
+      df_layers_i %>%
+        filter(grepl("^M", code_layer)) %>%
+        mutate(line =
+                 paste0(tolower(code_layer), "_bulk_den_check: ",
+                        bulk_den_check)) %>%
         pull(line) %>%
         cat(sep = "\n")
 
