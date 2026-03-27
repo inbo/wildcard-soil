@@ -36,7 +36,7 @@ show_sites_per_partner <- function(inst) {
 
   }
 
-  filtered_wp2 <- get("his") %>%
+  filtered_wp2 <- get("his", envir = globalenv()) %>%
     filter(grepl(paste(inst, collapse = "|"), institute_sampling)) %>%
     arrange(institute, res_id_inst) %>%
     select(res_id_inst,
@@ -44,7 +44,7 @@ show_sites_per_partner <- function(inst) {
            sub_id,
            composed_site_id)
 
-  filtered_wp3 <- get("wp3_sites") %>%
+  filtered_wp3 <- get("wp3_sites", envir = globalenv()) %>%
     filter(grepl(paste(inst, collapse = "|"), institute_sampling)) %>%
     arrange(institute, region, site_id) %>%
     select(
