@@ -1,5 +1,67 @@
 
-app_data_long <- function(app_data_wide) {
+#' Convert Survey123 app data from wide to long format
+#'
+#' Converts field data exported from the field Survey123 app from a wide format
+#' (one record per plot with repeated columns for layers) to a long format
+#' containing one record per soil layer.
+#'
+#' During the conversion, plot-level and layer-level datasets suitable for
+#' further combination with other data sources are created and data corrections
+#' can optionally be performed. Inconsistencies in the (corrected) data are
+#' detected and compiled.
+#'
+#' @param app_data_wide A data frame containing the raw Survey123 data
+#'   in wide format (typically one record per plot).
+#'
+#' @param apply_corrections Logical. If `TRUE` (default), predefined
+#'   corrections to the raw data are applied during processing. If `FALSE`,
+#'   the input data are converted without applying these corrections.
+#'
+#' @param create_inconsistency_report Logical. If `TRUE` (default), a
+#'   report listing detected inconsistencies in the submitted data is
+#'   created and returned. If `FALSE`, the conversion is performed silently
+#'   and no report is generated.
+#'
+#' @return
+#' A named list containing the processed datasets:
+#'
+#' \itemize{
+#' \item `df_layers` – A data frame containing soil layer data in long format
+#'       (one record per layer), including variables such as recorded masses,
+#'       coarse fragment content, and other layer-specific data
+#'
+#' \item `df_plot` – A data frame containing plot-level information such as
+#'       coordinates and site descriptors.
+#'
+#' \item `df_sampling_points` – A data frame containing sampling point-specific
+#'       information.
+#'
+#' \item `inconsistencies` – *(optional)* A data frame listing detected
+#'       inconsistencies or potential issues in the submitted data. This
+#'       element is only included when `create_inconsistency_report = TRUE`.
+#' }
+#'
+#' The returned objects can be accessed using `$`, e.g.:
+#'
+#' \preformatted{
+#' res <- app_data_long(app_data_wide)
+#'
+#' df_layers <- res$df_layers
+#' df_plot   <- res$df_plot
+#' df_sampling_points = res$df_sampling_points
+#' inconsistencies_app_data_long <- res$inconsistencies
+#' }
+#'
+#' @examples
+#' \dontrun{
+#' res_app_data_long <- app_data_long(app_data_wide)
+#' }
+#'
+#' @export
+
+app_data_long <- function(app_data_wide,
+                          apply_corrections = TRUE,
+                          create_inconsistency_report = TRUE) {
 
   # This function converts app data from the wide format to the long format
   # (different records per layer)
@@ -40,13 +102,14 @@ app_data_long <- function(app_data_wide) {
 
   df_properties <- app_data %>%
     select(code,
-           contains("M01"), contains("M13"), contains("M36"),
-           contains("M61")) %>%
-    select(code, starts_with("P")) %>%
-    select(code, contains("dist")) %>%
+           (contains("M01") | contains("M13") | contains("M36") |
+              contains("M61")) &
+             starts_with("P") &
+             contains("dist") &
+             # These columns do not contain properties
+             !ends_with("_undist_samples")
+             ) %>%
     mutate(across(matches("^P\\d+_M\\d+"), as.character)) %>%
-    # These columns do not contain properties
-    select(-P1_num_M36_undist_samples, -P1_num_M61_undist_samples) %>%
     pivot_longer(
       cols = matches("^P\\d+_M\\d+"),
       names_to = c("sampling_point", "code_layer", "variable"),
@@ -79,7 +142,6 @@ app_data_long <- function(app_data_wide) {
       names_from = variable,
       values_from = value
     ) %>%
-    select(code, code_layer, sampling_point, everything()) %>%
     mutate(dist = strsplit(as.character(dist), ",")) %>%
     unnest(dist) %>%  # Unnest the list into individual rows
     mutate(dist = na_if(dist, "99")) %>%
@@ -117,11 +179,12 @@ app_data_long <- function(app_data_wide) {
     ungroup() %>%
     rename(properties = dist)
 
+
+
   ## Plot-specific properties ----
 
-
-  df_properties_plot <- left_join(
-    # 1. gen_observtn (convert code first)
+  df_properties_plot <-
+    # gen_observtn (convert code first)
     app_data %>%
       select(code, gen_observtn) %>%
       rename(value = gen_observtn) %>%
@@ -144,15 +207,8 @@ app_data_long <- function(app_data_wide) {
             str_replace(value, "\\.(\\d)$", ",\\10"),
           # If there's a dot with 2 digits after it, just replace dot with comma
           str_detect(value, "\\.\\d{2}$") ~ str_replace(value, "\\.", ","),
-          # str_length(value) > 15 & str_count(value, "\\.") == 1 ~
-          #   str_replace(sprintf("%.2f", as.numeric(value)), "\\.", ","),
           # Otherwise leave as is
           TRUE ~ value)) %>%
-      # pivot_wider(
-      #   names_from = variable,
-      #   values_from = value
-      # ) %>%
-      # select(code, code_layer, sampling_point, everything()) %>%
       mutate(gen_obs = strsplit(as.character(value), ",")) %>%
       select(-value) %>%
       unnest(gen_obs) %>%  # Unnest the list into individual rows
@@ -177,27 +233,7 @@ app_data_long <- function(app_data_wide) {
             paste(collapse = ", ")
         }
       ) %>%
-      ungroup(),
-    # 2. other properties
-    app_data %>%
-      select(
-        code,
-        wp,
-        other_remarks,
-        other_observtn,
-        ends_with("remarks_fofloor_sample"),
-        ends_with("notes_dist_samples"),
-        ends_with("other_remarks_fragment"),
-        ends_with("notes_bulk_den"),
-        ends_with("remarks_sample"),
-        ends_with("remarks_bulk_den_sample")),
-    by = "code")
-
-
-
-  # TO DO: we will need to check these comments one by one and correct any
-  # changes manually. For example, we need to know if less than 5 forest floor
-  # sampling frames are taken.
+      ungroup()
 
 
 
@@ -205,22 +241,309 @@ app_data_long <- function(app_data_wide) {
 
 
 
-  # 2. Forest floor ----
+  # 2. Reshape sample checklist into one record per code_layer per plot ----
+
+  df_layers <- app_data %>%
+    select(-ends_with("dist"), -contains("thickness"), -contains("tamass"),
+           -vol_ring) %>%
+    rename_with(~ str_replace_all(., "eDNA", "edna")) %>%
+    rename_with(~ str_replace_all(., "(flamm|carbon)", "dist")) %>%
+    select(code, plot_code_simple, team_harmonized, globalid, res_id_harmonized,
+           wp, institute_sampling,
+           contains("OL"), contains("OFH"),
+           contains("M01"), contains("M13"), contains("M36"),
+           contains("M61")) %>%
+    mutate(across(-code, as.character)) %>%
+    pivot_longer(
+      cols = contains("OL") | contains("OFH") |
+        contains("M01") | contains("M13") | contains("M36") | contains("M61"),
+      names_to = "full_name",
+      values_to = "value"
+    ) %>%
+    mutate(
+      full_name = full_name %>%
+        str_replace_all(paste0("(",
+                               paste0(layers, collapse = "|"), ")"),
+                        "_\\1_") %>%
+        str_replace_all("__", "_") %>%
+        str_replace_all("^_|_$", ""),
+      code_layer = str_extract(full_name, paste0(layers, collapse = "|")),
+      variable = str_remove(full_name,
+                            paste0("_?", paste0(layers, collapse = "|"), "_?")),
+      variable = str_replace_all(variable, "__", "_"),
+      variable = str_replace_all(variable, "^_|_$", "")
+    ) %>%
+    select(code, plot_code_simple, team_harmonized, globalid, res_id_harmonized,
+           wp, institute_sampling,
+           code_layer, variable, value) %>%
+    pivot_wider(
+      names_from = variable,
+      values_from = value) %>%
+    rename(remarks_sample_dist = remarks_sample) %>%
+    # Automatically detect and convert columns that contain only
+    # numeric-convertible values to numeric class
+    mutate(across(
+      where(~ all(suppressWarnings(!is.na(as.numeric(.)) | is.na(.)))),
+      as.numeric)) %>%
+    mutate(
+      dist_check = case_when(
+        code_layer == "OL" & plot_code_simple ==
+          "CULS__159__Slovakia_Pilsko_spruce__NA" ~ "Sample collected",
+        code_layer == "OFH" & plot_code_simple %in% c(
+          "NPS__21__Spicnik__2") ~ "Sample collected",
+        code_layer == "M01" & plot_code_simple %in% c(
+          "WSL__26__Bannhalde__NA",
+          # Sample retrieved from eDNA2 (remainder after eDNA extraction)
+          "WSL__36__Steibruchhau__NA") ~ "Sample collected",
+        code_layer == "M13" & plot_code_simple %in% c(
+          "NWFVA__03-082__Bockmer_Holz__NA") ~ "Sample collected",
+        code_layer == "M61" & plot_code_simple %in% c(
+          "WSL__24__Leihubelwald__NA",
+          # Sample retrieved from undisturbed sample (respective masses known)
+          "WSL__53__Murgtal__NA") ~ "Sample collected",
+        code_layer == "M01" & plot_code_simple %in% c(
+          "WSL__40__La Niva__NA") ~ "Sample not collected",
+        code_layer == "M36" & plot_code_simple %in% c(
+          "BGD-NP__1__Berchtesgaden National Park__F059",
+          "FVA-BW__15__Waldmoor-Torfstich__1125") ~ "Sample not collected",
+        code_layer == "M61" & plot_code_simple %in% c(
+          "NWFVA__03-019__Stoeberhai__NA",
+          "NWFVA__03-044__Limker Strang__NA",
+          "FVA-BW__15__Waldmoor-Torfstich__1125",
+          "NWFVA__06-014__Kniebrecht__NA") ~ "Sample not collected",
+        dist_check == "1" ~ "Sample collected",
+        dist_check == "0" ~ "Sample not collected",
+        dist_check == "Sample don't collected" ~ "Sample not collected",
+        TRUE ~ dist_check
+      ),
+      bulk_den_check = case_when(
+        code_layer == "M13" & plot_code_simple %in% c(
+          "WR__53__Bunderbos__NA") ~ "Sample collected",
+        code_layer == "M36" & plot_code_simple %in% c(
+          "WSL__39__Combe Biosse__NA") ~ "Sample collected",
+        code_layer == "M36" & plot_code_simple %in% c(
+          "NWFVA__03-011__Walbecker Warte__NA") ~ "Sample not collected",
+        bulk_den_check == "1" ~ "Sample collected",
+        bulk_den_check == "0" ~ "Sample not collected",
+        bulk_den_check == "Sample don't collected" ~ "Sample not collected",
+        TRUE ~ bulk_den_check
+      ))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  # 3. Compile all plot-specific data ----
+
+  plot_columns <- c(
+    "survey_date",
+    "humus_form", "wrb_ref_soil_group", "wrb_qualifier_1", "wrb_qualifier_supp",
+    "latitude", "longitude", "coordinates", "hor_accuracy",
+    "air_temperature", "actual_weather", "past_weather",
+    "soil_condition", "soil_dist", "macrorelief", "slope_type", "slope_deg",
+    "moisture", "site_type", "scheme", "num_photo_humus", "management_type",
+    "start_survey", "end_survey", "survey_month", "survey_year")
+
+  d_soil_group <- read.csv("./data/additional_data/d_soil_group.csv",
+                           sep = ";")
+  d_soil_adjective <- read.csv("./data/additional_data/d_soil_adjective.csv",
+                               sep = ";")
+
+
+  df_plot <- app_data %>%
+    select(code, globalid,
+           composed_site_id, plot_code, plot_code_simple, res_id_harmonized,
+           team_harmonized, institute_sampling, wp,
+           any_of(plot_columns),
+           # Columns with remarks
+           other_remarks,
+           other_observtn,
+           ends_with("other_remarks_fragment"),
+           ends_with("remarks_bulk_den_sample")
+           ) %>%
+    left_join(
+      df_properties_plot,
+      by = "code") %>%
+    rename(code_wrb_ref_soil_group = wrb_ref_soil_group,
+           code_wrb_qualifier_1 = wrb_qualifier_1) %>%
+    mutate(
+      # Extract the part before the first comma if any.
+      # Note: not sure if this sequence follows the theoretical sequence
+      # of decreasing importance according to WRB...
+      code_wrb_qualifier_1_first = sub(",.*", "", code_wrb_qualifier_1)
+    ) %>%
+    left_join(
+      d_soil_group %>%
+        select(code, description) %>%
+        rename(wrb_ref_soil_group = description),
+      by = join_by("code_wrb_ref_soil_group" == "code")) %>%
+    left_join(
+      d_soil_adjective %>%
+        select(code, description) %>%
+        rename(wrb_qualifier_1 = description),
+      by = join_by("code_wrb_qualifier_1_first" == "code")) %>%
+    select(-code_wrb_qualifier_1_first) %>%
+    relocate(wrb_ref_soil_group, wrb_qualifier_1,
+             .before = code_wrb_ref_soil_group) %>%
+    mutate(
+      humus_form = str_to_title(humus_form))
+
+
+  # TO DO: Check coordinates
+
+
+
+
+
+  ### INCONSISTENCY 11 ----
+
+  if (create_inconsistency_report) {
+
+    rule <- paste0("Reported slope is high and may have been accidentally ",
+                   "reported as a percentage instead of decimal degrees. ",
+                   "Please confirm the unit.")
+
+    rule_id <- "11"
+
+    source("./src/functions/get_attribute_catalogue_app.R")
+    attribute_catalogue <- get_attribute_catalogue_app()
+
+    # Dataframe to collect problems
+    inconsistencies <- data.frame(
+      source = character(0),
+      team = character(0),
+      plot_code_app = character(0),
+      res_id_inst = character(0),
+      globalid = character(0),
+      parameter = character(0),
+      sample_code = character(0),
+      value = character(0), # Must be character always!
+      inconsistency_reason = character(0),
+      unique_inconsistency = logical(0),
+      rule_id = character(0))
+
+
+    slope_plaus_max <- 30
+
+    # Records with a problem
+
+    recs_problem <- df_plot %>%
+      filter(slope_deg > slope_plaus_max)
+
+    inc <- recs_problem %>%
+      mutate(
+        inconsistency_reason = rule,
+        value = slope_deg,
+        parameter = "slope_deg") %>%
+      left_join(attribute_catalogue %>%
+                  rename(parameter_description = descr,
+                         parameter_unit = unit),
+                by = join_by("parameter" == "column_name")) %>%
+      relocate(parameter_description, parameter_unit, .after = parameter) %>%
+      mutate(
+        # mark unique_inconsistency = TRUE
+        # only for the first parameter per record
+        unique_inconsistency = TRUE,
+        source = "Survey123 app",
+        team = team_harmonized,
+        plot_code_app = code,
+        res_id_inst = res_id_harmonized,
+        sample_code = NA_character_,
+        rule_id = rule_id) %>%
+      mutate(value = as.character(value)) %>%
+      select(source, team, plot_code_app, res_id_inst, globalid, sample_code,
+             parameter, parameter_description, parameter_unit, value,
+             inconsistency_reason, unique_inconsistency, rule_id)
+
+    inconsistencies <- bind_rows(
+      inconsistencies,
+      inc)
+
+  } # End of "if create_inconsistency_report"
+
+
+
+
+
+  if (apply_corrections) {
+
+    df_plot <- df_plot %>%
+      mutate(
+        # TO DO: add any other plots with slopes reported as percentages
+        slope_deg = case_when(
+          # Convert slope from percent to degrees for WSL
+          institute_sampling == "WSL" ~ atan(slope_deg / 100) * 180 / pi
+        ),
+        humus_form = case_when(
+          # Humus form WSL Seeliwald (histosol) should not be Mor
+          plot_code_simple == "WSL__25__Seeliwald__NA" ~ "Semi-terrestrial",
+          # Plots for which "None" was reported as the humus form (probably
+          # due to the low amount of forest floor). However, based on the field
+          # photos, those are Mulls.
+          plot_code_simple %in% c(
+            "USV__1__Vanatori Natural Park (core area)__NA",
+            "WSL__15__Les Follateres__NA") ~ "Mull",
+          TRUE ~ humus_form
+        ))
+
+  } # End of "if apply_corrections"
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  # 4. Forest floor ----
 
   ## Compile mass and thickness of forest floor sampling point ----
 
   # First create a dataset per sampling point
 
-  df_sampling_points <- app_data %>%
+  df_sampling_points_ff <- app_data %>%
     select(
-      code, team_harmonized, globalid, res_id_harmonized, wp,
+      code, team_harmonized, globalid, res_id_harmonized, plot_code_simple, wp,
       surface_frame,
-      matches(paste0("(^|_)", paste0(c("OL", "OFH"), collapse = "|")))) %>%
-    select(code, team_harmonized, globalid, res_id_harmonized, wp,
-           surface_frame, starts_with("P")) %>%
-    select(code, team_harmonized, globalid, res_id_harmonized, wp,
-           surface_frame, contains("thickness"), contains("tamass")) %>%
-    mutate(across(matches("^P\\d+_M\\d+"), as.character)) %>%
+      matches(paste0("(^|_)", paste0(c("OL", "OFH"), collapse = "|"))) &
+        starts_with("P") &
+        (contains("thickness") | contains("tamass"))
+      ) %>%
+    mutate(across(matches("^P\\d+_M\\d+"), as.character))
+
+  if (apply_corrections) {
+
+    # df_sampling_points_ff <- df_sampling_points_ff %>%
+    #   # ---
+    #   # Any MANUAL CORRECTIONS for thickness/tamass per point should go here!
+    #   # (manual corrections are based on comments in app, field photos,
+    #   #  feedback by partners, expert assessment)
+    #   # ---
+    #   mutate(
+    #
+    #   )
+
+  } # End of "if apply_corrections"
+
+  df_sampling_points_ff <- df_sampling_points_ff %>%
     pivot_longer(
       cols = matches("^P\\d+_"),
       names_to = c("sampling_point", "code_layer", "variable"),
@@ -231,7 +554,7 @@ app_data_long <- function(app_data_wide) {
       names_from = variable,
       values_from = value
     ) %>%
-    select(code, code_layer, sampling_point, everything()) %>%
+    select(code, plot_code_simple, code_layer, sampling_point, everything()) %>%
     # Filter out rows from sampling points P6-P9 if tamass is NA
     filter(
       !(sampling_point %in% c("P6", "P7", "P8", "P9")) | !is.na(tamass)) %>%
@@ -240,108 +563,96 @@ app_data_long <- function(app_data_wide) {
 
   ### INCONSISTENCY 2 ----
 
-  rule <- paste0("Forest floor mass should be plausible in comparison with ",
-                 "thickness and surface area frame")
-  rule_id <- "2"
+  if (create_inconsistency_report) {
 
-  name_export <- "inconsistencies_app_long"
+    rule <- paste0("Forest floor mass should be plausible in comparison with ",
+                   "thickness and surface area frame")
+    rule_id <- "2"
 
-  source("./src/functions/get_attribute_catalogue_app.R")
-  attribute_catalogue <- get_attribute_catalogue_app()
+    # These are the 5-95 % quantiles of the bulk densities of organic matrices
+    # in ICP Forests (systematic Level I) (kg m-3)
+    # Note: this is dry while values from the field are moist!
 
-  # Dataframe to collect problems
-  inconsistencies <- data.frame(
-    source = character(0),
-    team = character(0),
-    plot_code_app = character(0),
-    res_id_inst = character(0),
-    globalid = character(0),
-    parameter = character(0),
-    sample_code = character(0),
-    value = character(0), # Must be character always!
-    inconsistency_reason = character(0),
-    unique_inconsistency = logical(0),
-    rule_id = character(0))
+    mc_wet_by_dry_min <- 1
+    mc_wet_by_dry_max <- 3 # Estimated based on Sevendonk which was quite wet
 
-  # These are the 5-95 % quantiles of the bulk densities of organic matrices
-  # in ICP Forests (systematic Level I) (kg m-3)
-  # Note: this is dry while values from the field are moist!
+    bd_ofh_plaus <- c(55 * mc_wet_by_dry_min, 190 * mc_wet_by_dry_max)
+    bd_ol_plaus <- c(15 * mc_wet_by_dry_min, 136 * mc_wet_by_dry_max)
+    bd_peat_plaus <- c(51 * mc_wet_by_dry_min, 221 * mc_wet_by_dry_max)
 
-  mc_wet_by_dry_min <- 1
-  mc_wet_by_dry_max <- 3 # Estimated based on Sevendonk which was quite wet
+    # Records with a problem
 
-  bd_ofh_plaus <- c(55 * mc_wet_by_dry_min, 190 * mc_wet_by_dry_max)
-  bd_ol_plaus <- c(15 * mc_wet_by_dry_min, 136 * mc_wet_by_dry_max)
-  bd_peat_plaus <- c(51 * mc_wet_by_dry_min, 221 * mc_wet_by_dry_max)
+    recs_problem <- df_sampling_points_ff %>%
+      mutate(
+        # tamass in gram
+        tamass_est_min = case_when(
+          code_layer == "OFH" ~
+            (thickness * 1E-2 * surface_frame) * bd_ofh_plaus[1] * 1E3,
+          code_layer == "OL" ~
+            (thickness * 1E-2 * surface_frame) * bd_ol_plaus[1] * 1E3),
+        tamass_est_max = case_when(
+          code_layer == "OFH" ~
+            (thickness * 1E-2 * surface_frame) * bd_ofh_plaus[2] * 1E3,
+          code_layer == "OL" ~
+            (thickness * 1E-2 * surface_frame) * bd_ol_plaus[2] * 1E3),
+        # standardised deviation
+        tamass_dev = (abs(tamass - (tamass_est_min + tamass_est_max) / 2)) /
+          ((tamass_est_max - tamass_est_min) / 2)) %>%
+      filter(thickness > 0 &
+               (tamass < tamass_est_min |
+                  tamass > tamass_est_max)) %>%
+      # Since there is quite some uncertainty in measurement of layer
+      # thicknesses we can filter for a relative deviation of at least X
+      filter(tamass_dev > 1.5)
 
-  # Records with a problem
+    inc <- recs_problem %>%
+      mutate(
+        inconsistency_reason =
+          paste0(rule,
+                 " [min: ", round(tamass_est_min, 1),
+                 " g, max: ", round(tamass_est_max, 1), " g]")) %>%
+      # pivot longer to get one row per parameter
+      # (thickness, tamass, surface_frame)
+      pivot_longer(
+        cols = c(tamass, thickness, surface_frame),
+        names_to = "parameter",
+        values_to = "value"
+      ) %>%
+      mutate(
+        value = case_when(
+          parameter %in% c("thickness", "tamass") ~
+            as.character(round(value, 1)),
+          TRUE ~ as.character(round(value, 4))),
+        parameter = case_when(
+          parameter %in% c("thickness", "tamass") ~
+            paste(sampling_point, tolower(code_layer), parameter, sep = "_"),
+          TRUE ~ parameter)) %>%
+      left_join(attribute_catalogue %>%
+                  rename(parameter_description = descr,
+                         parameter_unit = unit),
+                by = join_by("parameter" == "column_name")) %>%
+      relocate(parameter_description, parameter_unit, .after = parameter) %>%
+      mutate(
+        # mark unique_inconsistency = TRUE
+        # only for the first parameter per record
+        unique_inconsistency = (grepl("tamass", parameter)),
+        source = "Survey123 app",
+        team = team_harmonized,
+        plot_code_app = code,
+        res_id_inst = res_id_harmonized,
+        sample_code = code_layer,
+        rule_id = rule_id) %>%
+      mutate(value = as.character(value)) %>%
+      select(source, team, plot_code_app, res_id_inst, globalid, sample_code,
+             parameter, parameter_description, parameter_unit, value,
+             inconsistency_reason, unique_inconsistency, rule_id)
 
-  recs_problem <- df_sampling_points %>%
-    mutate(
-      # tamass in gram
-      tamass_est_min = case_when(
-        code_layer == "OFH" ~
-          (thickness * 1E-2 * surface_frame) * bd_ofh_plaus[1] * 1E3,
-        code_layer == "OL" ~
-          (thickness * 1E-2 * surface_frame) * bd_ol_plaus[1] * 1E3),
-      tamass_est_max = case_when(
-        code_layer == "OFH" ~
-          (thickness * 1E-2 * surface_frame) * bd_ofh_plaus[2] * 1E3,
-        code_layer == "OL" ~
-          (thickness * 1E-2 * surface_frame) * bd_ol_plaus[2] * 1E3),
-      # standardised deviation
-      tamass_dev = (abs(tamass - (tamass_est_min + tamass_est_max) / 2)) /
-        ((tamass_est_max - tamass_est_min) / 2)) %>%
-    filter(thickness > 0 &
-             (tamass < tamass_est_min |
-                tamass > tamass_est_max)) %>%
-    # Since there is quite some uncertainty in measurement of layer thicknesses
-    # we can filter for a relative deviation of at least X
-    filter(tamass_dev > 1.5)
+    inconsistencies <- bind_rows(
+      inconsistencies,
+      inc)
 
-  inc <- recs_problem %>%
-    mutate(
-      inconsistency_reason =
-        paste0(rule,
-               " [min: ", round(tamass_est_min, 1),
-               " g, max: ", round(tamass_est_max, 1), " g]")) %>%
-    # pivot longer to get one row per parameter
-    # (thickness, tamass, surface_frame)
-    pivot_longer(
-      cols = c(tamass, thickness, surface_frame),
-      names_to = "parameter",
-      values_to = "value"
-    ) %>%
-    mutate(
-      value = case_when(
-        parameter %in% c("thickness", "tamass") ~ as.character(round(value, 1)),
-        TRUE ~ as.character(round(value, 4))),
-      parameter = case_when(
-        parameter %in% c("thickness", "tamass") ~
-          paste(sampling_point, tolower(code_layer), parameter, sep = "_"),
-        TRUE ~ parameter)) %>%
-    left_join(attribute_catalogue %>%
-                rename(parameter_description = descr,
-                       parameter_unit = unit),
-              by = join_by("parameter" == "column_name")) %>%
-    relocate(parameter_description, parameter_unit, .after = parameter) %>%
-    mutate(
-      # mark unique_inconsistency = TRUE only for the first parameter per record
-      unique_inconsistency = (grepl("tamass", parameter)),
-      source = "Survey123 app",
-      team = team_harmonized,
-      plot_code_app = code,
-      res_id_inst = res_id_harmonized,
-      sample_code = code_layer,
-      rule_id = rule_id) %>%
-    mutate(value = as.character(value)) %>%
-    select(source, team, plot_code_app, res_id_inst, globalid, sample_code,
-           parameter, parameter_description, parameter_unit, value,
-           inconsistency_reason, unique_inconsistency, rule_id)
+  } # End of "if create_inconsistency_report"
 
-  inconsistencies <- bind_rows(
-    inconsistencies,
-    inc)
 
 
 
@@ -349,8 +660,8 @@ app_data_long <- function(app_data_wide) {
 
   ## Summarise forest floor across sampling points ----
 
-  df_sampling_points_summ <- df_sampling_points %>%
-    group_by(code, code_layer, surface_frame) %>%
+  df_ff_summ <- df_sampling_points_ff %>%
+    group_by(code, plot_code_simple, code_layer, surface_frame) %>%
     reframe(
       count_ff_frames = n(),
       thickness_min = ifelse(
@@ -384,17 +695,46 @@ app_data_long <- function(app_data_wide) {
         NA_real_)) %>%
     ungroup()
 
-  # TO DO: in case there are partners which an exceptional number of
-  # forest floor sampling frame locations covered per site
-  # (e.g., WSL Seeliwald), based on the information from df_properties_plot,
-  # I would incorporate this here manually by updating
-  # df_sampling_points_summ$count_ff_frames
+
+
+
+  if (apply_corrections) {
+
+    # df_ff_summ <- df_ff_summ %>%
+    #   # ---
+    #   # Any MANUAL CORRECTIONS for surface_frame or count_ff_frames
+    #   # should go here!
+    #   # (e.g., WSL Seeliwald)
+    #   # (manual corrections are based on comments in app, field photos,
+    #   #  feedback by partners, expert assessment)
+    #   # ---
+    #   mutate(
+    #
+    #     #  TO DO: if surface_frame > 1: divide by 1E3
+    #     #  Check scripts NW-FVA
+    #
+    #   )
+
+
+    # TO DO script
+    # PIR: surface frame > 1: divide by 1E3
+
+
+
+  } # End of "if apply_corrections"
+
+
+  # TO DO (PIR): if surface_frame > 1: divide by 1E3
 
 
 
 
 
-  # 3. Potential to take undisturbed samples ----
+
+
+
+
+  # 5. Potential to take undisturbed samples ----
 
   d_kopecky_depths <- tibble(
     code = c(10, 11, 12, 13),
@@ -425,16 +765,12 @@ app_data_long <- function(app_data_wide) {
     app_data %>%
       filter(!P1_bulk_density %in% c("YES", "NO")) %>%
       select(code, team_harmonized, globalid, res_id_harmonized,
-             site_type,
+             plot_code_simple, site_type,
              # Volume of kopecky ring
              # (typically one ring per depth x sampling point)
              vol_ring,
              P1_num_M36_undist_samples, P1_num_M61_undist_samples,
-             starts_with("P")) %>%
-      select(code, team_harmonized, globalid, res_id_harmonized,
-             site_type, vol_ring,
-             P1_num_M36_undist_samples, P1_num_M61_undist_samples,
-             ends_with("_bulk_density")) %>%
+             starts_with("P") & ends_with("_bulk_density")) %>%
       pivot_longer(cols = matches("^P[1-5]_bulk_density$"),
                    names_to = "sampling_point",
                    values_to = "code_depths") %>%
@@ -447,7 +783,8 @@ app_data_long <- function(app_data_wide) {
                 by = c("code_depths" = "code")) %>%
       filter(!is.na(code_layer)) %>%
       group_by(code, team_harmonized, globalid, res_id_harmonized,
-               site_type, code_layer, vol_ring) %>%
+               plot_code_simple, site_type, code_layer, vol_ring,
+               P1_num_M36_undist_samples, P1_num_M61_undist_samples) %>%
       reframe(
         undist_sampling_points = paste(sort(unique(sampling_point)),
                                        collapse = ","),
@@ -455,16 +792,13 @@ app_data_long <- function(app_data_wide) {
     # 2025 records
     app_data %>%
       select(code, team_harmonized, globalid, res_id_harmonized,
-             site_type,
+             plot_code_simple, site_type,
              # Volume of kopecky ring
              # (typically multiple rings per depth across sampling points or
              # per sampling point)
              vol_ring,
-             starts_with("P")) %>%
-      select(code, team_harmonized, globalid, res_id_harmonized,
-             site_type, vol_ring,
              P1_num_M36_undist_samples, P1_num_M61_undist_samples,
-             ends_with("_bulk_density_lyr")) %>%
+             starts_with("P") & ends_with("_bulk_density_lyr")) %>%
       pivot_longer(cols = matches("^P[1-5]_bulk_density_lyr$"),
                    names_to = "sampling_point",
                    values_to = "code_depths") %>%
@@ -474,38 +808,74 @@ app_data_long <- function(app_data_wide) {
       separate_rows(code_depths, sep = ",") %>%
       rename(code_layer = code_depths) %>%
       arrange(code, code_layer) %>%
-      # filter(!is.na(code_layer)) %>%
       group_by(code, team_harmonized, globalid, res_id_harmonized,
-               site_type, code_layer, vol_ring,
+               plot_code_simple, site_type, code_layer, vol_ring,
                P1_num_M36_undist_samples, P1_num_M61_undist_samples) %>%
       reframe(
         undist_sampling_points = paste(sort(unique(sampling_point)),
                                        collapse = ","),
         count_rings = n())
     ) %>%
-    left_join(
-      app_data %>%
-        select(code, plot_code_simple),
-      by = "code") %>%
-    # ---
-    # Any MANUAL CORRECTIONS to the number of rings should happen here!
-    # Part 1: based on comments in the app
-    # (TO DO: later add part 2 based on feedback partners)
-    # ---
     mutate(
-      P1_num_M36_undist_samples = case_when(
-        plot_code_simple == "AlberIT - UNIRC__24__Macchia dell'Orso__NA" ~ 3,
-        plot_code_simple == "BFNP__2122__Laerchenberg__NA" ~ 4,
+      count_rings_orig = count_rings)
 
 
-      ),
-      P1_num_M61_undist_samples = case_when(
-        plot_code_simple == "AlberIT - UNIRC__22__Monte Tranquillo__NA" ~ 3,
-        plot_code_simple == "AlberIT - UNIRC__24__Macchia dell'Orso__NA" ~ 4,
-        plot_code_simple == "BFNP__137__Mittelsteighuette__NA" ~ 5,
-        plot_code_simple == "BFNP__2122__Laerchenberg__NA" ~ 5,
 
-      )) %>%
+  if (apply_corrections) {
+
+    df_rings <- df_rings %>%
+      # ---
+      # Any MANUAL CORRECTIONS should happen here!
+      # Part 1: P1_num_M36_undist_samples and P1_num_M36_undist_samples
+      # (count_rings, undist_sampling_points, vol_ring follow below)
+      # (manual corrections are based on comments in app, field photos,
+      #  feedback by partners, expert assessment)
+      # ---
+      mutate(
+        P1_num_M36_undist_samples = case_when(
+          plot_code_simple == "AlberIT - UNIRC__24__Macchia dell'Orso__NA" ~ 3,
+          plot_code_simple == "BFNP__2122__Laerchenberg__NA" ~ 4,
+          plot_code_simple == "FVA-BW__17__Schnapsried__1127" ~ NA,
+          plot_code_simple == "FVA-BW__543__Schnepfenmoos__NA" ~ NA,
+          plot_code_simple == "FVA-BW__602__Riedis__NA" ~ NA,
+          plot_code_simple == "FVA-BW__62__Feldseewald__NA" ~ NA,
+          plot_code_simple == "FVA-BW__621__Siedigkopf__NA" ~ NA,
+          plot_code_simple == "FVA-BW__9__Napf__1109" ~ NA,
+          plot_code_simple == "NWFVA__03-060__Meinsberg__NA" ~ 5,
+          # TO DO: to be confirmed with partner if this is correctly interpreted
+          plot_code_simple == "WSL__26__Bannhalde__NA" ~ 5,
+          TRUE ~ P1_num_M36_undist_samples
+        ),
+        P1_num_M61_undist_samples = case_when(
+          plot_code_simple == "AlberIT - UNIRC__22__Monte Tranquillo__NA" ~ 3,
+          plot_code_simple == "AlberIT - UNIRC__24__Macchia dell'Orso__NA" ~ 4,
+          plot_code_simple == "BFNP__137__Mittelsteighuette__NA" ~ 5,
+          plot_code_simple == "BFNP__2122__Laerchenberg__NA" ~ 5,
+          plot_code_simple == "BFNP_EXTRA__59__Recherau__NA" ~ 5,
+          plot_code_simple == "FVA-BW__17__Schnapsried__1127" ~ NA,
+          plot_code_simple == "FVA-BW__543__Schnepfenmoos__NA" ~ NA,
+          plot_code_simple == "FVA-BW__602__Riedis__NA" ~ NA,
+          plot_code_simple == "FVA-BW__62__Feldseewald__NA" ~ NA,
+          plot_code_simple == "FVA-BW__621__Siedigkopf__NA" ~ NA,
+          plot_code_simple == "FVA-BW__9__Napf__1109" ~ NA,
+          plot_code_simple == "LWF__119_a__Stachel__NA" ~ NA,
+          plot_code_simple == "NWFVA__03-019__Stoeberhai__NA" ~ NA,
+          plot_code_simple == "NWFVA__03-044__Limker Strang__NA" ~ NA,
+          plot_code_simple == "NWFVA__03-046__Koenigsbuche__NA" ~ NA,
+          plot_code_simple == "NWFVA__06-014__Kniebrecht__NA" ~ NA,
+          plot_code_simple == "NWFVA__06-006__Niddahaenge__a" ~ NA,
+          plot_code_simple == "WSL__18__Fuerstenhalde__NA" ~ 3,
+          # TO DO: to be confirmed with partner if this is correctly interpreted
+          plot_code_simple == "WSL__26__Bannhalde__NA" ~ 5,
+          # TO DO: to be confirmed with partner if this is correctly interpreted
+          plot_code_simple == "NWFVA__03-083__Saubrink_Oberberg__NA" ~ 5,
+          TRUE ~ P1_num_M61_undist_samples
+        ))
+
+  } # End of "if apply_corrections"
+
+
+  df_rings <- df_rings %>%
     # For some plots (e.g. BFNP__2122__Laerchenberg__NA),
     # partners were unable to collect undisturbed samples at the
     # deepest layers (M36, M61) across all sampling points due to stoniness, and
@@ -564,7 +934,6 @@ app_data_long <- function(app_data_wide) {
     # central pit, correct the number of rings based on the columns
     # P1_num_M36_undist_samples, P1_num_M61_undist_samples
     mutate(
-      count_rings_orig = count_rings,
       count_rings = case_when(
         # 1. M36
         # If P1_num > 1 and count_rings == 1 → use value in P1_num
@@ -600,7 +969,7 @@ app_data_long <- function(app_data_wide) {
           (P1_num_M61_undist_samples + count_rings - 1),
         # ELSE, ignore P1_num_M36_undist_samples and
         # P1_num_M61_undist_samples
-        TRUE ~ count_rings_orig)) %>%
+        TRUE ~ count_rings)) %>%
     rowwise() %>%
     mutate(
       # Update undist_sampling_points also
@@ -617,6 +986,480 @@ app_data_long <- function(app_data_wide) {
           (P1_num_M61_undist_samples > 1)  ~
           update_points(undist_sampling_points, P1_num_M61_undist_samples),
         TRUE ~ undist_sampling_points)) %>%
+    ungroup() %>%
+    left_join(
+      df_layers %>%
+        select(plot_code_simple, code_layer,
+               bulk_den, bulk_den_check),
+      by = join_by("plot_code_simple", "code_layer")) %>%
+    # Filter out records for which no sample was taken
+    # Consistent with "bulk_den == 0" for WP2
+    filter(bulk_den_check == "Sample collected")
+
+
+
+
+  if (apply_corrections) {
+
+    df_rings <- df_rings %>%
+      # ---
+      # Any MANUAL CORRECTIONS should happen here!
+      # Part 2: count_rings, undist_sampling_points, vol_ring
+      # (P1_num_M36_undist_samples and P1_num_M36_undist_samples were
+      #  earlier in the script)
+      # (manual corrections are based on comments in app, field photos,
+      #  feedback by partners, expert assessment)
+      # ---
+      mutate(
+        count_rings = case_when(
+          # Probably one ring instead of five (as the partner also suspects)
+          # This is plausible based mass of undisturbed WBL
+          plot_code_simple == "BGD-NP__1__Berchtesgaden National Park__F066" &
+            code_layer == "M01" ~ 1,
+          # Probably one ring instead of five (as the partner also suspects)
+          # This is plausible based on mass of undisturbed WBL
+          # (in fact, volume still seems high as compared to mass)
+          plot_code_simple == "BGD-NP__1__Berchtesgaden National Park__F099" &
+            code_layer == "M01" ~ 1,
+          # One ring based on communication with the partner
+          plot_code_simple == "CULS__169__Slovakia_Padva_beech__NA" &
+            code_layer == "M61" ~ 1,
+          # Four rings instead of five
+          plot_code_simple == "LWF__119_a__Stachel__NA" &
+            code_layer == "M36" ~ 4,
+          # Five rings
+          plot_code_simple == "NWFVA__03-060__Meinsberg__NA" &
+            code_layer == "M36" ~ 5,
+          # TO DO: to be confirmed with partner if this is correctly interpreted
+          plot_code_simple == "WSL__21__Tariche Bois Banal__NA" &
+            code_layer == "M01" ~ 4,
+          # TO DO: to be confirmed with partner if this is correctly interpreted
+          plot_code_simple == "WSL__25__Seeliwald__NA" &
+            code_layer %in% c("M13", "M36") ~ 5,
+          # As reported
+          plot_code_simple == "WSL__39__Combe Biosse__NA" &
+            code_layer %in% c("M01", "M36") ~ 2,
+          # TO DO: to be confirmed with partner if this is correctly interpreted
+          plot_code_simple == "WSL__4__Pfynwald__NA" &
+            code_layer == "M01" ~ 4,
+          # Special case: undisturbed sample was splitted into undisturbed
+          # and disturbed sample at the central lab
+          plot_code_simple == "WSL__53__Murgtal__NA" &
+            code_layer == "M61" ~ 0.3990493,
+          # As confirmed by partner
+          plot_code_simple == "WSL__6__St. Jean__NA" &
+            code_layer == "M01" ~ 3,
+          # NW-FVA used 20 x small cilinders of 5.3 cm3 instead of the
+          # standard kopecky rings in case the latter were impossible in stony
+          # sites.
+          # This is explicitly mentioned in the comments for some samples,
+          # but not always, so some of the corrections below are an educated
+          # guess based on the field mass of the samples. TO DO: verify those.
+          # TO DO: verify the volume.
+          # ---
+          # M01
+          (code_layer == "M01" &
+             plot_code_simple %in% c(
+               "FVA-BW__10__Zweribach__NA", # Based on feedback partner
+               "FVA-BW__1036__Nollenwald__NA", # Based on feedback partner
+               "FVA-BW__588__Altlochkar-Rotwasser__NA")) |
+            # M13
+            (code_layer == "M13" &
+               plot_code_simple %in% c(
+                 "FVA-BW__14__Wildseemoor__1123",
+                 "FVA-BW__15__Waldmoor-Torfstich__1125",
+                 "FVA-BW__500__Barlochkar__NA",
+                 "FVA-BW__510__Sturmlesloch__NA",
+                 "FVA-BW__59__Teufelsries__NA",
+                 "NWFVA__03-049__Haringer Berg__NA",
+                 "NWFVA__06-004__Wattenberg und Hundsberg__b")) |
+            # M36
+            (code_layer == "M36" &
+               plot_code_simple %in% c(
+                 "FVA-BW__602__Riedis__NA")) ~ 20,
+          # Based on feedback partner
+          code_layer == "M13" &
+            plot_code_simple %in% c("NWFVA__03-074__Butterberg_NI__NA") ~ 40,
+          # Based on feedback partner
+          code_layer == "M13" &
+            plot_code_simple %in% c("NWFVA__03-014__Huenstollen__NA") ~ 10,
+          TRUE ~ count_rings
+        ),
+        undist_sampling_points = case_when(
+          # Originally "P1,P2,P3,P4,P5" while all five rings were taken at P1
+          plot_code_simple == "BFNP_EXTRA__59__Recherau__NA" &
+            code_layer == "M61" ~ "P1,P1,P1,P1,P1",
+          # Probably one ring instead of five (as the partner also suspects)
+          # (Not sure which sampling point but this does not matter)
+          plot_code_simple == "BGD-NP__1__Berchtesgaden National Park__F066" &
+            code_layer == "M01" ~ "P1",
+          # Probably one ring instead of five (as the partner also suspects)
+          # (Not sure which sampling point but this does not matter)
+          plot_code_simple == "BGD-NP__1__Berchtesgaden National Park__F099" &
+            code_layer == "M01" ~ "P1",
+          # One ring based on communication with the partner
+          plot_code_simple == "CULS__169__Slovakia_Padva_beech__NA" &
+            code_layer == "M61" ~ "P1",
+          # Probably, five rings were taken in total
+          plot_code_simple == "FVA-BW__17__Schnapsried__1127" &
+            code_layer %in% c("M36", "M61") ~ "P1,P1,P1,P1,P1",
+          # Probably, five rings were taken in total
+          plot_code_simple == "FVA-BW__543__Schnepfenmoos__NA" &
+            code_layer == "M36" ~ "P1,P1,P1,P1,P1",
+          # 20 rings were taken, but fill in something less confusing
+          plot_code_simple == "FVA-BW__602__Riedis__NA" &
+            code_layer == "M36" ~ "P1,P1,P1,P1,P1",
+          # Probably, five rings were taken in total
+          plot_code_simple == "FVA-BW__62__Feldseewald__NA" &
+            code_layer == "M36" ~ "P1,P1,P1,P1,P1",
+          # Probably, five rings were taken in total
+          plot_code_simple == "FVA-BW__621__Siedigkopf__NA" &
+            code_layer %in% c("M36", "M61") ~ "P1,P1,P1,P1,P1",
+          # Probably, five rings were taken in total
+          plot_code_simple == "FVA-BW__9__Napf__1109" &
+            code_layer %in% c("M36", "M61") ~ "P1,P1,P1,P1,P1",
+          # Four rings instead of five
+          plot_code_simple == "LWF__119_a__Stachel__NA" &
+            code_layer == "M36" ~ "P1,P1,P1,P1",
+          # Probably, five rings were taken in total
+          plot_code_simple == "NWFVA__03-019__Stoeberhai__NA" &
+            code_layer == "M36" ~ "P1,P1,P1,P1,P1",
+          # Probably, five rings were taken in total
+          plot_code_simple == "NWFVA__03-044__Limker Strang__NA" &
+            code_layer == "M36" ~ "P1,P1,P1,P1,P1",
+          # Probably, five rings were taken in total
+          plot_code_simple == "NWFVA__03-046__Koenigsbuche__NA" &
+            code_layer == "M36" ~ "P1,P1,P1,P1,P1",
+          # Five rings
+          plot_code_simple == "NWFVA__03-060__Meinsberg__NA" &
+            code_layer == "M36" ~ "P1,P1,P1,P1,P1",
+          # Probably, five rings were taken in total
+          plot_code_simple == "NWFVA__03-089__Winterlieth__NA" &
+            code_layer %in% c("M36", "M61") ~ "P1,P1,P1,P1,P1",
+          # Probably, five rings were taken in total
+          plot_code_simple == "NWFVA__06-014__Kniebrecht__NA" &
+            code_layer == "M36" ~ "P1,P1,P1,P1,P1",
+          # Probably, five rings were taken in total
+          plot_code_simple == "NWFVA__06-006__Niddahaenge__a" &
+            code_layer == "M36" ~ "P1,P1,P1,P1,P1",
+          # TO DO: to be confirmed with partner if this is correctly interpreted
+          plot_code_simple == "WSL__21__Tariche Bois Banal__NA" &
+            code_layer == "M01" ~ "P1,P2,P3,P4",
+          # TO DO: to be confirmed with partner if this is correctly interpreted
+          plot_code_simple == "WSL__25__Seeliwald__NA" &
+            code_layer %in% c("M01", "M13", "M36") ~ "P1,P1,P1,P1,P1",
+          # As reported
+          plot_code_simple == "WSL__39__Combe Biosse__NA" &
+            code_layer %in% c("M01", "M36") ~ "P3,P3",
+          # TO DO: to be confirmed with partner if this is correctly interpreted
+          plot_code_simple == "WSL__4__Pfynwald__NA" &
+            code_layer == "M01" ~ "P2,P3,P4,P5",
+          # As confirmed by partner
+          plot_code_simple == "WSL__6__St. Jean__NA" &
+            code_layer == "M01" ~ "P1,P2,P7",
+
+          TRUE ~ undist_sampling_points
+        ),
+        vol_ring = case_when(
+          # NW-FVA used 20 x small cilinders of 5 cm3 instead of the
+          # standard kopecky rings in case the latter were impossible in stony
+          # sites.
+          # This is explicitly mentioned in the comments for some samples,
+          # but not always, so some of the corrections below are an educated
+          # guess based on the field mass of the samples. TO DO: verify those.
+          # TO DO: verify the volume.
+          # ---
+          # M01
+          (code_layer == "M01" &
+             plot_code_simple %in% c(
+               "FVA-BW__10__Zweribach__NA", # Based on feedback partner
+               "FVA-BW__1036__Nollenwald__NA", # Based on feedback partner
+               "FVA-BW__588__Altlochkar-Rotwasser__NA")) |
+            # M13
+            (code_layer == "M13" &
+               plot_code_simple %in% c(
+                 "FVA-BW__14__Wildseemoor__1123",
+                 "FVA-BW__15__Waldmoor-Torfstich__1125",
+                 "FVA-BW__500__Barlochkar__NA",
+                 "FVA-BW__510__Sturmlesloch__NA",
+                 "FVA-BW__59__Teufelsries__NA",
+                 "NWFVA__03-049__Haringer Berg__NA",
+                 "NWFVA__06-004__Wattenberg und Hundsberg__b",
+                 "NWFVA__03-074__Butterberg_NI__NA", # Based on feedback partner
+                 "NWFVA__03-014__Huenstollen__NA" # Based on feedback partner
+               )) |
+            # M36
+            (code_layer == "M36" &
+               plot_code_simple %in% c(
+                 "FVA-BW__602__Riedis__NA")) ~ 5,
+          TRUE ~ vol_ring)
+      )
+
+  } # End of "if apply_corrections"
+
+
+
+
+
+
+
+
+  if (create_inconsistency_report) {
+
+    ### INCONSISTENCY 3 ----
+
+    rule <- paste0("The total number of reported undisturbed samples from the ",
+                   "central pit (P1) and additional sampling points should not",
+                   " exceed 5 (unlikely). Please check how many undisturbed ",
+                   "samples you took at the given depth.")
+    rule_id <- "3"
+
+
+    # Records with a problem
+
+    recs_problem <- df_rings %>%
+      mutate(
+        flag_implausible = case_when(
+          # M36
+          (code_layer == "M36" & !is.na(P1_num_M36_undist_samples) &
+             (P1_num_M36_undist_samples > 1) &
+             ((P1_num_M36_undist_samples + count_rings_orig) > 6)) |
+            # M61
+            (code_layer == "M61" & !is.na(P1_num_M61_undist_samples) &
+               (P1_num_M61_undist_samples > 1) &
+               ((P1_num_M61_undist_samples + count_rings_orig) > 6)) ~ TRUE,
+          TRUE ~ FALSE),
+        P1_num_undist_samples = case_when(
+          code_layer == "M36" ~ P1_num_M36_undist_samples,
+          code_layer == "M61" ~ P1_num_M61_undist_samples)) %>%
+      filter(flag_implausible == TRUE)
+
+    inc <- recs_problem %>%
+      mutate(
+        inconsistency_reason =
+          paste0(rule,
+                 " [P1: ", P1_num_undist_samples,
+                 ", P2-5: ", count_rings_orig - 1, "]"),
+        count_rings_p2to5 = count_rings_orig - 1) %>%
+      # pivot longer to get one row per parameter
+      pivot_longer(
+        cols = c(P1_num_undist_samples, count_rings_p2to5),
+        names_to = "parameter",
+        values_to = "value"
+      ) %>%
+      left_join(attribute_catalogue %>%
+                  rename(parameter_description = descr,
+                         parameter_unit = unit),
+                by = join_by("parameter" == "column_name")) %>%
+      mutate(
+        parameter_description = case_when(
+          parameter == "P1_num_undist_samples" ~
+            paste0("Number of undisturbed samples (e.g., Kopecky rings) taken ",
+                   "in the pit in sampling point P1 for given depth"),
+          parameter == "count_rings_p2to5" ~
+            paste0("Number of undisturbed samples (e.g., Kopecky rings) taken ",
+                   "across sampling points P2 to P5 for given depth"),
+          TRUE ~ parameter_description),
+        parameter_unit = case_when(
+          parameter == "P1_num_undist_samples" ~ "-",
+          parameter == "count_rings_p2to5" ~ "-",
+          TRUE ~ parameter_description)) %>%
+      relocate(parameter_description, parameter_unit, .after = parameter) %>%
+      mutate(
+        # mark unique_inconsistency = TRUE
+        # only for the first parameter per record
+        unique_inconsistency = (grepl("P1_num_undist_samples", parameter)),
+        source = "Survey123 app",
+        team = team_harmonized,
+        plot_code_app = code,
+        res_id_inst = res_id_harmonized,
+        sample_code = code_layer,
+        rule_id = rule_id) %>%
+      mutate(value = as.character(value)) %>%
+      select(source, team, plot_code_app, res_id_inst, globalid, sample_code,
+             parameter, parameter_description, parameter_unit, value,
+             inconsistency_reason, unique_inconsistency, rule_id)
+
+    inconsistencies <- bind_rows(
+      inconsistencies,
+      inc)
+
+
+  } # End of "if create_inconsistency_report"
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  # 6. Depth bedrock ----
+
+
+  df_bedrock_wide <- app_data %>%
+    select(code, plot_code_simple,
+           composed_site_id, team_harmonized, globalid,
+           res_id_harmonized, wp, site_type,
+           matches("^P[1-9]_depth_bedrock$"))
+
+  if (apply_corrections) {
+
+    df_bedrock_wide <- df_bedrock_wide %>%
+      # ---
+      # Any MANUAL CORRECTIONS for bedrock depths per point should go here!
+      # (manual corrections are based on comments in app, field photos,
+      #  feedback by partners, expert assessment)
+      # ---
+      mutate(
+        # For specific columns
+        P1_depth_bedrock = case_when(
+          # Based on comment (P1_notes_dist_samples)
+          plot_code_simple ==
+            "CULS__150__Slovakia_Bielovodska dolina_spruce__NA" ~ 40,
+          # Based on comment (P1_notes_dist_samples)
+          plot_code_simple ==
+            "CULS__155__Slovakia_Tomanova dolina_spruce__NA" ~ 95,
+          # P1_other_remarks_fragment: "The deep is 90cm because there was
+          # weathered bedrock already"
+          plot_code_simple == "CULS__170__Slovakia_Skalna Alpa_beech__NA" ~ 90,
+          # Several German plots sampled by NW-FVA need to be corrected based
+          # on feedback by the partner (plausibility in combination with photos,
+          # field forms etc)
+          plot_code_simple == "FVA-BW__510__Sturmlesloch__NA" ~ 20,
+          plot_code_simple == "FVA-BW__14__Wildseemoor__1123" ~ 20,
+          plot_code_simple == "FVA-BW__543__Schnepfenmoos__NA" ~ 40,
+          plot_code_simple == "NWFVA__03-041__Vogelherd__NA" ~ 80,
+          plot_code_simple == "NWFVA__06-006__Niddahaenge__a" ~ 46,
+          plot_code_simple == "NWFVA__03-044__Limker Strang__NA" ~ 50,
+          plot_code_simple == "NWFVA__03-017__Grosser Staufenberg__NA" ~ 30,
+          plot_code_simple == "FVA-BW__602__Riedis__NA" ~ 38,
+          plot_code_simple == "NWFVA__03-074__Butterberg_NI__NA" ~ NA_real_,
+          plot_code_simple == "NWFVA__03-014__Huenstollen__NA" ~ 20,
+          plot_code_simple == "NWFVA__03-046__Koenigsbuche__NA" ~ 50,
+
+          TRUE ~ P1_depth_bedrock
+        ),
+
+        P2_depth_bedrock = case_when(
+          # Based on other sampling points (probably forgotten)
+          # Note: in the end, non-NA P[2-9] bedrock depths for FVA-BW will often
+          # be replaced by NA in this R script, based on feedback of the partner
+          # (probably, the bedrock depth of P1 was just copied to other points)
+          plot_code_simple == "FVA-BW__500__Barlochkar__NA" ~ 23,
+          # Comment P2_notes_dist_samples: "M01 horizont only 5cm deep"
+          plot_code_simple == "WSL__11__Weidwald__NA" ~ 5,
+          TRUE ~ P2_depth_bedrock
+        ),
+
+        P3_depth_bedrock = case_when(
+          # Based on comment (P3_notes_dist_samples)
+          plot_code_simple == "CULS__121__Slovakia_Kornietova_beech__NA" ~ 50,
+          plot_code_simple == "CULS__169__Slovakia_Padva_beech__NA" ~ 60,
+          plot_code_simple == "CULS__176__Slovakia_Ploska_thermophilic__NA" ~
+            70,
+          # Based on other sampling points (probably forgotten)
+          # Note: in the end, non-NA P[2-9] bedrock depths for FVA-BW will often
+          # be replaced by NA in this R script, based on feedback of the partner
+          # (probably, the bedrock depth of P1 was just copied to other points)
+          plot_code_simple == "FVA-BW__10__Zweribach__NA" ~ 10,
+          plot_code_simple == "FVA-BW__1036__Nollenwald__NA" ~ 10,
+          plot_code_simple == "FVA-BW__500__Barlochkar__NA" ~ 23,
+          plot_code_simple == "FVA-BW__59__Teufelsries__NA" ~ 30,
+          # As confirmed by partner
+          plot_code_simple == "UL__7__Menina__NA" ~ 30,
+          # Comment by partner: "Bedrock at 55" (stony site). Bedrock is
+          # reported to be at the surface (0 cm) for P1, P2, P5, P6, P7.
+          # Therefore, instead of P1, replace first NA (P3) by 55.
+          plot_code_simple == "WSL__39__Combe Biosse__NA" ~ 55,
+          TRUE ~ P3_depth_bedrock
+        ),
+
+        P4_depth_bedrock = case_when(
+          # Based on comment (P4_notes_dist_samples: "Not possible to dig this
+          # point"). For other points, they went all the way down to 100 cm
+          # under extremely stony conditions (85 %), so "not possible" must mean
+          # "bedrock"
+          plot_code_simple == "CULS__153__Slovakia_Koprova dolina_spruce__NA" ~
+            0,
+          plot_code_simple == "CULS__169__Slovakia_Padva_beech__NA" ~ 60,
+          # Based on other sampling points (probably forgotten)
+          # Note: in the end, non-NA P[2-9] bedrock depths for FVA-BW will often
+          # be replaced by NA in this R script, based on feedback of the partner
+          # (probably, the bedrock depth of P1 was just copied to other points)
+          plot_code_simple == "FVA-BW__1036__Nollenwald__NA" ~ 10,
+          plot_code_simple == "FVA-BW__500__Barlochkar__NA" ~ 23,
+          # As confirmed by partner
+          plot_code_simple == "UL__1__Sumik__NA" ~ 30,
+          plot_code_simple == "UL__5__Rajhenav__NA" ~ 30,
+          TRUE ~ P4_depth_bedrock
+        ),
+
+        P5_depth_bedrock = case_when(
+          plot_code_simple == "CULS__169__Slovakia_Padva_beech__NA" ~ 70,
+          # Based on other sampling points (probably forgotten)
+          # Note: in the end, non-NA P[2-9] bedrock depths for FVA-BW will often
+          # be replaced by NA in this R script, based on feedback of the partner
+          # (probably, the bedrock depth of P1 was just copied to other points)
+          plot_code_simple == "FVA-BW__59__Teufelsries__NA" ~ 30,
+          # As confirmed by partner
+          plot_code_simple == "UL__1__Sumik__NA" ~ 30,
+          plot_code_simple == "UL__7__Menina__NA" ~ 30,
+          TRUE ~ P5_depth_bedrock
+        ),
+
+        P6_depth_bedrock = case_when(
+          # As confirmed by partner
+          plot_code_simple == "UL__7__Menina__NA" ~ 30,
+          TRUE ~ P6_depth_bedrock
+        ),
+
+        P7_depth_bedrock = case_when(
+          # Based on comment (P7_notes_dist_samples)
+          plot_code_simple == "BGD-NP__1__Berchtesgaden National Park__F038" ~
+            0,
+          # Based on other sampling points (probably forgotten)
+          # Note: in the end, non-NA P[2-9] bedrock depths for FVA-BW will often
+          # be replaced by NA in this R script, based on feedback of the partner
+          # (probably, the bedrock depth of P1 was just copied to other points)
+          plot_code_simple == "FVA-BW__10__Zweribach__NA" ~ 10,
+          # As confirmed by partner
+          plot_code_simple == "UL__1__Sumik__NA" ~ 30,
+          TRUE ~ P7_depth_bedrock
+        ),
+
+        P9_depth_bedrock = case_when(
+          plot_code_simple == "CULS__169__Slovakia_Padva_beech__NA" ~ 15,
+          plot_code_simple == "FVA-BW__588__Altlochkar-Rotwasser__NA" ~ 10,
+          # Based on other sampling points (probably forgotten)
+          # Note: in the end, non-NA P[2-9] bedrock depths for FVA-BW will often
+          # be replaced by NA in this R script, based on feedback of the partner
+          # (probably, the bedrock depth of P1 was just copied to other points)
+          plot_code_simple == "FVA-BW__500__Barlochkar__NA" ~ 23,
+          TRUE ~ P9_depth_bedrock
+        ))
+
+
+  } # End of "if apply_corrections"
+
+
+  df_bedrock_wide <- df_bedrock_wide %>%
+    rowwise() %>%
+    mutate(
+      all_same = {
+        vals <- c_across(matches("^P[2-9]_depth_bedrock$"))
+        all(!is.na(vals)) && length(unique(vals)) == 1 &&
+          # Exception: the very shallow profiles (no M01):
+          # Faulbach and Boedmerenwald
+          vals[1] >= 10
+      }
+    ) %>%
     ungroup()
 
 
@@ -627,161 +1470,362 @@ app_data_long <- function(app_data_wide) {
 
 
 
-  ### INCONSISTENCY 3 ----
-
-  rule <- paste0("The total number of reported undisturbed samples from the ",
-                 "central pit (P1) and additional sampling points should not ",
-                 "exceed 5 (unlikely). Please check how many undisturbed ",
-                 "samples you took at the given depth.")
-  rule_id <- "3"
 
 
-  # Records with a problem
 
-  recs_problem <- df_rings %>%
-    mutate(
-      flag_implausible = case_when(
-        # M36
-        (code_layer == "M36" & !is.na(P1_num_M36_undist_samples) &
-           (P1_num_M36_undist_samples > 1) &
-           ((P1_num_M36_undist_samples + count_rings_orig) > 6)) |
-          # M61
-          (code_layer == "M61" & !is.na(P1_num_M61_undist_samples) &
-             (P1_num_M61_undist_samples > 1) &
-             ((P1_num_M61_undist_samples + count_rings_orig) > 6)) ~ TRUE,
-        TRUE ~ FALSE),
-      P1_num_undist_samples = case_when(
-        code_layer == "M36" ~ P1_num_M36_undist_samples,
-        code_layer == "M61" ~ P1_num_M61_undist_samples)) %>%
-    filter(flag_implausible == TRUE)
+  if (create_inconsistency_report) {
 
-  inc <- recs_problem %>%
-    mutate(
-      inconsistency_reason =
-        paste0(rule,
-               " [P1: ", P1_num_undist_samples,
-               ", P2-5: ", count_rings_orig - 1, "]"),
-      count_rings_p2to5 = count_rings_orig - 1) %>%
-    # pivot longer to get one row per parameter
-    pivot_longer(
-      cols = c(P1_num_undist_samples, count_rings_p2to5),
-      names_to = "parameter",
-      values_to = "value"
-    ) %>%
-    left_join(attribute_catalogue %>%
-                rename(parameter_description = descr,
-                       parameter_unit = unit),
-              by = join_by("parameter" == "column_name")) %>%
-    mutate(
-      parameter_description = case_when(
-        parameter == "P1_num_undist_samples" ~
-          paste0("Number of undisturbed samples (e.g., Kopecky rings) taken ",
-                 "in the pit in sampling point P1 for given depth"),
-        parameter == "count_rings_p2to5" ~
-          paste0("Number of undisturbed samples (e.g., Kopecky rings) taken ",
-                 "across sampling points P2 to P5 for given depth"),
-        TRUE ~ parameter_description),
-      parameter_unit = case_when(
-        parameter == "P1_num_undist_samples" ~ "-",
-        parameter == "count_rings_p2to5" ~ "-",
-        TRUE ~ parameter_description)) %>%
-    relocate(parameter_description, parameter_unit, .after = parameter) %>%
-    mutate(
-      # mark unique_inconsistency = TRUE only for the first parameter per record
-      unique_inconsistency = (grepl("P1_num_undist_samples", parameter)),
-      source = "Survey123 app",
-      team = team_harmonized,
-      plot_code_app = code,
-      res_id_inst = res_id_harmonized,
-      sample_code = code_layer,
-      rule_id = rule_id) %>%
-    mutate(value = as.character(value)) %>%
-    select(source, team, plot_code_app, res_id_inst, globalid, sample_code,
-           parameter, parameter_description, parameter_unit, value,
-           inconsistency_reason, unique_inconsistency, rule_id)
+    ### INCONSISTENCY 5 ----
 
-  inconsistencies <- bind_rows(
-    inconsistencies,
-    inc)
+    rule <- paste0("Bedrock depth is missing (NA) in some sampling points ",
+                   "(P1-5), while others report shallow bedrock. Please ",
+                   "confirm that all missing values are correctly marked as ",
+                   "NA (i.e., bedrock below 100 cm)")
+    rule_id <- "5"
 
+
+
+    # Records with a problem
+
+    recs_problem <- df_bedrock_wide %>%
+      # The potential problem with the bedrock depths:
+      # It is not a mandatory parameter, because of which it may be not be
+      # filled in (for some sampling points).
+      # → Question: does NA mean "no bedrock in upper 100 cm" or
+      # "bedrock in upper 100 cm but depth not filled in by partner"?
+      # There are some suspicious cases, e.g. Zweribach (NW-FVA),
+      # Nollenwald (NW-FVA)
+      # However, the bedrock appearance within a site can be very variable,
+      # e.g., Hadecka planinka (VUK): 34, NA, 37, 37, NA. This is known to be
+      # correct.
+      mutate(
+        # How many bedrock depths are filled in?
+        n_filled = sum(!is.na(c_across(matches("^P[1-5]_depth_bedrock$")))),
+        # Are all non-missing bedrock depths ≤ 30?
+        # (This is also TRUE for records with only NAs - can be ignored)
+        all_shallow = all(c_across(matches("^P[1-5]_depth_bedrock$"))[!is.na(
+          c_across(matches("^P[1-5]_depth_bedrock$")))] <= 30),
+        # How many bedrock depths are missing?
+        n_missing = sum(is.na(c_across(matches("^P[1-5]_depth_bedrock$")))),
+        # Suspicious if at least 2 bedrock depths are filled in and at least 1
+        # is NA, with all of the filled bedrock depths being shallower than 30
+        # cm?
+        flag_suspicious = n_filled >= 2 & all_shallow & n_missing > 0) %>%
+      filter(flag_suspicious == TRUE)
+
+    inc <- recs_problem %>%
+      mutate(
+        inconsistency_reason = rule) %>%
+      # pivot longer to get one row per parameter
+      pivot_longer(
+        cols = matches("^P[1-5]_depth_bedrock$"),
+        names_to = "parameter",
+        values_to = "value"
+      ) %>%
+      left_join(attribute_catalogue %>%
+                  rename(parameter_description = descr,
+                         parameter_unit = unit),
+                by = join_by("parameter" == "column_name")) %>%
+      relocate(parameter_description, parameter_unit, .after = parameter) %>%
+      mutate(
+        # mark unique_inconsistency = TRUE
+        # only for the first parameter per record
+        unique_inconsistency = (grepl("^P1", parameter)),
+        source = "Survey123 app",
+        team = team_harmonized,
+        plot_code_app = code,
+        res_id_inst = res_id_harmonized,
+        sample_code = NA_character_,
+        rule_id = rule_id) %>%
+      mutate(value = as.character(value)) %>%
+      select(source, team, plot_code_app, res_id_inst, globalid, sample_code,
+             parameter, parameter_description, parameter_unit, value,
+             inconsistency_reason, unique_inconsistency, rule_id)
+
+    inconsistencies <- bind_rows(
+      inconsistencies,
+      inc)
 
 
 
 
   ### INCONSISTENCY 4 ----
 
-  rule <- paste0("The total number of reported undisturbed samples from the ",
-                 "central pit (P1) and additional sampling points should ",
-                 "not be 1 (unlikely). Please check how many undisturbed ",
-                 "samples you took at the given depth.")
 
-  rule_id <- "4"
+    rule <- paste0("Identical bedrock depth values are reported across ",
+                   "sampling points (P2–9). This suggests the values may have ",
+                   "been copied from P1 rather than independently observed. ",
+                   "Please confirm how to interpret this.")
+
+    rule_id <- "4"
 
 
-  # Records with a problem
+    # Records with a problem
 
-  recs_problem <- df_rings %>%
-    mutate(
-      P1_num_undist_samples = case_when(
-        code_layer == "M36" ~ P1_num_M36_undist_samples,
-        code_layer == "M61" ~ P1_num_M61_undist_samples)) %>%
-    filter(
-      !is.na(P1_num_undist_samples) &
-      (P1_num_undist_samples + count_rings_orig - 1) == 1)
+    recs_problem <- df_bedrock_wide %>%
+      filter(all_same)
 
-  # Note: some "standard" plots also have one ring per depth layer (e.g.,
-  # Laerchenberg), but this is more plausible, because no deep pit had to
-  # be dug. With the deep pit, it would make sense to take more than one
-  # undisturbed sample.
+    inc <- recs_problem %>%
+      pivot_longer(
+        cols = matches("P\\d{1}_"),
+        names_to = "parameter",
+        values_to = "value"
+      ) %>%
+      mutate(
+        inconsistency_reason = rule
+        ) %>%
+      left_join(attribute_catalogue %>%
+                  rename(parameter_description = descr,
+                         parameter_unit = unit),
+                by = join_by("parameter" == "column_name")) %>%
+      relocate(parameter_description, parameter_unit, .after = parameter) %>%
+      mutate(
+        # mark unique_inconsistency = TRUE
+        # only for the first parameter per record
+        unique_inconsistency = (grepl("P1", parameter)),
+        source = "Survey123 app",
+        team = team_harmonized,
+        plot_code_app = code,
+        res_id_inst = res_id_harmonized,
+        sample_code = NA_character_,
+        rule_id = rule_id) %>%
+      mutate(value = as.character(value)) %>%
+      select(source, team, plot_code_app, res_id_inst, globalid, sample_code,
+             parameter, parameter_description, parameter_unit, value,
+             inconsistency_reason, unique_inconsistency, rule_id)
 
-  inc <- recs_problem %>%
-    mutate(
-      inconsistency_reason =
-        paste0(rule,
-               " [P1: ", P1_num_undist_samples,
-               ", P2-5: ", count_rings_orig - 1, "]"),
-      count_rings_p2to5 = count_rings_orig - 1) %>%
-    # pivot longer to get one row per parameter
-    pivot_longer(
-      cols = c(P1_num_undist_samples, count_rings_p2to5),
-      names_to = "parameter",
-      values_to = "value"
+    inconsistencies <- bind_rows(
+      inconsistencies,
+      inc)
+
+  } # End of "if create_inconsistency_report"
+
+
+
+
+
+
+
+
+  if (apply_corrections) {
+
+    df_bedrock_wide <- df_bedrock_wide %>%
+      mutate(
+        across(
+          matches("^P[2-9]_depth_bedrock$"),
+          ~ if_else(
+            all_same | plot_code_simple %in% c(
+              "FVA-BW__14__Wildseemoor__1123",
+              # Considering mismatch between reported bedrock depth and
+              # code_layer for which it was reported + impossible to know
+              # for the given sampling point + as also suspected by the partner
+              "FVA-BW__621__Siedigkopf__NA"),
+            NA_real_,
+            .x
+          )
+        )
+      )
+
+  } # End of "if apply_corrections"
+
+
+
+
+
+  ## Summarise bedrock depths into one value per plot ----
+
+  # Data preparations (for censoring):
+  # Depths should represent the observed depth (in metres) or lower censoring
+  # bound.
+  # A censoring column must be added, indicating either "right" or "none"
+
+  df_bedrock_cens <- df_bedrock_wide %>%
+    select(-all_same) %>%
+    filter(wp == "WP2") %>%
+    select(
+      plot_code_simple, team_harmonized, site_type,
+      matches("P\\d{1}_")
     ) %>%
-    left_join(attribute_catalogue %>%
-                rename(parameter_description = descr,
-                       parameter_unit = unit),
-              by = join_by("parameter" == "column_name")) %>%
+    # 1. Add the depth until which (un)disturbed samples have been collected
+    # (for censoring from that depth onwards if shallow)
+    left_join(
+      df_layers %>%
+        filter(!code_layer %in% c("OL", "OFH")) %>%
+        mutate(
+          depth_bottom = case_when(
+            code_layer == "M61" ~ 100,
+            code_layer == "M36" ~ 60,
+            code_layer == "M13" ~ 30,
+            code_layer == "M01" ~ 10
+          ),
+          valid = !(grepl("not", dist_check) & grepl("not", bulk_den_check))
+        ) %>%
+        group_by(plot_code_simple) %>%
+        reframe(
+          depth_reached = if (any(valid, na.rm = TRUE)) {
+            max(depth_bottom[valid], na.rm = TRUE)
+          } else {
+            0
+          }
+        ),
+      by = "plot_code_simple") %>%
+    # Transform to long format (per sampling point)
+    pivot_longer(
+      cols = matches("P\\d{1}_"),
+      names_to = "p_id",
+      values_to = "depth"
+    ) %>%
     mutate(
-      parameter_description = case_when(
-        parameter == "P1_num_undist_samples" ~
-          paste0("Number of undisturbed samples (e.g., Kopecky rings) taken ",
-                 "in the pit in sampling point P1 for given depth"),
-        parameter == "count_rings_p2to5" ~
-          paste0("Number of undisturbed samples (e.g., Kopecky rings) taken ",
-                 "across sampling points P2 to P5 for given depth"),
-        TRUE ~ parameter_description),
-      parameter_unit = case_when(
-        parameter == "P1_num_undist_samples" ~ "-",
-        parameter == "count_rings_p2to5" ~ "-",
-        TRUE ~ parameter_description)) %>%
-    relocate(parameter_description, parameter_unit, .after = parameter) %>%
+      p_id = gsub("_depth_bedrock", "", p_id)) %>%
+    # 2. Add maximum depth reached with undisturbed sampling per sampling point
+    #    (assuming that data are correctly reported)
+    left_join(
+      df_rings %>%
+        select(plot_code_simple, code_layer, undist_sampling_points) %>%
+        mutate(undist_sampling_points =
+                 strsplit(as.character(undist_sampling_points), ",")) %>%
+        unnest(undist_sampling_points) %>%
+        rename(p_id = undist_sampling_points) %>%
+        mutate(
+          depth_bottom = case_when(
+            code_layer == "M01" ~ 10,
+            code_layer == "M13" ~ 30,
+            code_layer == "M36" ~ 60,
+            code_layer == "M61" ~ 100)
+        ) %>%
+        group_by(plot_code_simple, p_id) %>%
+        reframe(
+          depth_reached_undist = max(depth_bottom, na.rm = TRUE)) %>%
+        # Complete cases for which no undisturbed samples could be collected
+        complete(
+          plot_code_simple,
+          p_id = paste0("P", 1:5),
+          fill = list(depth_reached_undist = 0)
+        ),
+      by = join_by("plot_code_simple", "p_id")
+    ) %>%
+    relocate(depth_reached_undist, .after = "depth_reached") %>%
     mutate(
-      # mark unique_inconsistency = TRUE only for the first parameter per record
-      unique_inconsistency = (grepl("P1_num_undist_samples", parameter)),
-      source = "Survey123 app",
-      team = team_harmonized,
-      plot_code_app = code,
-      res_id_inst = res_id_harmonized,
-      sample_code = code_layer,
-      rule_id = rule_id) %>%
-    mutate(value = as.character(value)) %>%
-    select(source, team, plot_code_app, res_id_inst, globalid, sample_code,
-           parameter, parameter_description, parameter_unit, value,
-           inconsistency_reason, unique_inconsistency, rule_id)
+      # Theoretical depths to be covered across sampling points for standard
+      # and stony sites
+      depth_theor = case_when(
+        site_type == "Standard site" & p_id %in% paste0("P", 1:5) ~ 100,
+        site_type == "Standard site" & !p_id %in% paste0("P", 1:5) ~ 30,
+        site_type == "Stony site" & p_id %in% paste0("P", 1) ~ 100,
+        site_type == "Stony site" & !p_id %in% paste0("P", 1) ~ 30),
+      censoring = case_when(
+        !is.na(depth) ~ "none",
+        # Temporary set remaining depth NA cases to right-censored
+        # For modelling with a beta distribution (in meters), the data are
+        # right-censored
+        TRUE ~ "right"
+      ),
+      # Replace depth NA by censored value
+      depth = case_when(
+        !is.na(depth) ~ depth,
+        # NA cases for which they have not (been able to) collect(ed) samples
+        # until the theoretical depth to be covered:
+        # use the deepest depth that was reached
+        # Based on information in app data ---
+        # If the partner indicated (in comments) that:
+        # - they could/did not go deeper than a certain depth (that is shallower
+        #   than the theoretical depths for the different sampling points in
+        #   standard and stony sites), without reporting bedrock.
+        #   This can be due to stoniness, compaction, soil being either too
+        #   loose or too saturated to stay inside a gouge auger.
+        #   Notes:
+        #   · based on explicit comments or explicitly clear from the profile
+        #     pit photo. "reason_bulk_den" with "Present bedrock" is not
+        #     sufficient evidence (they may have gone deeper with disturbed
+        #     samples)
+        #   · without a profile pit, it is usually not sure whether
+        #     blocking of a gouge auger is caused by the presence of coarse
+        #     fragments or that of bedrock.
+        #   · this assessment is a bit arbitrary (maybe not always
+        #     indicated in the app). Mostly depends from partner to partner.
+        #     E.g., CULS indicated "Not possible to dig this point" at
+        #     P4_notes_dist_samples. For other points, they went all the way
+        #     down to 100 cm under extremely stony conditions (85 %), so "not
+        #     possible" must mean "bedrock" (uncensored).
+        # - they could go deeper than the theoretical depth (e.g., until 100 cm
+        #   at P[2-9] of stony sites)
+        plot_code_simple == "AlberIT - UNIRC__22__Monte Tranquillo__NA" &
+          p_id == "P3" ~ 15,
+        plot_code_simple == "AlberIT - UNIRC__22__Monte Tranquillo__NA" &
+          p_id == "P4" ~ 60,
+        plot_code_simple == "AlberIT - UNIRC__24__Macchia dell'Orso__NA" &
+          p_id %in% c("P2", "P4") ~ 35,
+        plot_code_simple == "AlberIT - UNIRC__24__Macchia dell'Orso__NA" &
+          p_id == "P3" ~ 25,
+        plot_code_simple == "AlberIT - UNIRC__24__Macchia dell'Orso__NA" &
+          p_id == "P5" ~ 65,
+        plot_code_simple == "BFNP__IP_10__IP_Hohensteingehaenge__NA" &
+          p_id %in% c("P4", "P5") ~ 100,
+        plot_code_simple == "BFNP__IP_5__IP_Feistenberg__NA" &
+          p_id %in% c("P4", "P5") ~ 100,
+        plot_code_simple == "BGD-NP__1__Berchtesgaden National Park__F059" &
+          p_id %in% c("P2", "P3") ~ 20,
+        plot_code_simple == "BGD-NP__1__Berchtesgaden National Park__F138" &
+          p_id %in% c("P2", "P4", "P6", "P9") ~ 10,
+        plot_code_simple == "DISAFA - UNITO__13__Lago Perso__NA" &
+          p_id == "P2" ~ 20,
+        plot_code_simple == "DISAFA - UNITO__13__Lago Perso__NA" &
+          p_id %in% paste0("P", c(3, 6, 7, 8, 9)) ~ 10,
+        plot_code_simple == "DISAFA - UNITO__15__Alpe Devero__NA" ~ 10,
+        plot_code_simple == "DISAFA - UNITO__4__Lom__NA" & p_id == "P1" ~ 30,
+        plot_code_simple == "DISAFA - UNITO__9__Paneveggio__NA" &
+          p_id == "P1" ~ 30,
+        plot_code_simple == "DISAFA - UNITO__9__Paneveggio__NA" &
+          p_id %in% c("P2", "P3", "P4") ~ 20,
+        plot_code_simple == "DISAFA - UNITO__9__Paneveggio__NA" &
+          p_id == "P5" ~ 15,
+        plot_code_simple == "FVA-BW__621__Siedigkopf__NA" & p_id == "P1" ~ 70,
+        plot_code_simple == "LWF__119_a__Stachel__NA" & p_id == "P1" ~ 54,
+        plot_code_simple == "LWF__160_a__Mittelberg__NA" &
+          p_id %in% paste0("P", 1:8) ~ 30, # M36 only collected in P9
+        plot_code_simple == "LWF__60_a__Echinger Lohe__NA" & p_id == "P1" ~ 40,
+        plot_code_simple == "NWFVA__03-074__Butterberg_NI__NA" &
+          p_id == "P1" ~ 20, # Seems deeper than 20 cm
+        plot_code_simple == "UCPH__7__Stroedam__NA" &
+          p_id %in% paste0("P", 1:5) ~ 60,
+        plot_code_simple == "UCPH__8__Suserup__NA" & p_id == "P3" ~ 70,
+        plot_code_simple == "UCPH__8__Suserup__NA" & p_id == "P4" ~ 75,
+        plot_code_simple == "UNITBV__4__Domogled__NA" & p_id == "P2" ~ 80,
+        plot_code_simple == "UNITBV__4__Domogled__NA" & p_id == "P5" ~ 75,
+        plot_code_simple == "UNIUD/HSI_EXTRA__3__Limsky Kanal__LI-MN" &
+          p_id == "P2" ~ 30,
+        plot_code_simple == "UNIUD/HSI_EXTRA__3__Limsky Kanal__LI-MN" &
+          p_id == "P5" ~ 60,
+        plot_code_simple == "UNIUD_EXTRA__1__Cansiglio__AF-MN" &
+          p_id == "P3" ~ 60,
+        plot_code_simple == "WSL__51__Tamangur__NA" &
+          p_id %in% c("P7", "P9") ~ 0,
+        # General scenarios:
+        # 1. Depth reached with undisturbed sampling (per sampling point)
+        #    was deeper than theoretical depth
+        #    (We only have this sampling point-differentiated informatio
+        #     systematically for undisturbed samples, but if they reached
+        #     deeper with undisturbed samples, then bedrock was for sure not
+        #     shallower than that depth that was reached at the given point)
+        depth_reached_undist > depth_theor ~ depth_reached_undist,
+        # 2. Overall depth reached in plot is shallower than theoretical depth
+        #    (e.g., Nollenwald, Zweribach)
+        depth_reached < depth_theor ~ depth_reached,
+        TRUE ~ depth_theor
+        ),
+      # Convert to m
+      depth_m = depth / 100,
+      # When depth is 100, there is no censoring for SOC stock in 100 cm
+      censoring = case_when(
+        depth == 100 ~ "none",
+        TRUE ~ censoring),
+      # Boundary-avoiding transformation
+      depth_m = case_when(
+        depth_m == 0 ~ 0.005,
+        depth_m == 1 ~ 0.995,
+        TRUE ~ depth_m
+      ))
 
-  inconsistencies <- bind_rows(
-    inconsistencies,
-    inc)
 
 
 
@@ -792,133 +1836,120 @@ app_data_long <- function(app_data_wide) {
 
 
 
-  # 4. Depth bedrock ----
+  # Summarise bedrock depths using BRMS
+  # Remove files in './models/bedrock_brms/' if needed, as changing the iter
+  # value does not always trigger refitting of the brms model.
 
+  source("./src/functions/summarise_bedrock_depths.R")
+  df_bedrock_summ <- summarise_bedrock_depths(df_bedrock = df_bedrock_cens,
+                                              iter = 2000)
 
-  df_bedrock <- app_data %>%
-    select(code, composed_site_id, team_harmonized, globalid,
-           res_id_harmonized, wp, site_type,
-           matches("^P[1-9]_depth_bedrock$")) %>%
+  df_bedrock <- df_bedrock_wide %>%
+    filter(wp == "WP2") %>%
+    select(-all_same) %>%
     arrange(team_harmonized) %>%
     rowwise() %>%
-    # The potential problem with the bedrock depths:
-    # It is not a mandatory parameter, because of which it may be not be filled
-    # in (for some sampling points).
-    # → Question: does NA mean "no bedrock in upper 100 cm" or
-    # "bedrock in upper 100 cm but depth not filled in by partner"?
-    # There are some suspicious cases, e.g. Zweribach (NW-FVA),
-    # Nollenwald (NW-FVA)
-    # However, the bedrock appearance within a site can be very variable, e.g.,
-    # Hadecka planinka (VUK): 34, NA, 37, 37, NA. This is known to be correct.
-    # Another question: since partners typically didn't auger deeper than 30 cm
-    # in points 6 - 9: it is maybe more correct to ignore those columns?
-    # (because these columns cannot help us if the bedrock appears between 30
-    #  and 100 cm)
     mutate(
-      # How many bedrock depths are filled in?
-      n_filled = sum(!is.na(c_across(matches("^P[1-5]_depth_bedrock$")))),
-      # Are all non-missing bedrock depths ≤ 30?
-      # (This is also TRUE for records with only NAs - can be ignored)
-      all_shallow = all(c_across(matches("^P[1-5]_depth_bedrock$"))[!is.na(
-        c_across(matches("^P[1-5]_depth_bedrock$")))] <= 30),
-      # How many bedrock depths are missing?
-      n_missing = sum(is.na(c_across(matches("^P[1-5]_depth_bedrock$")))),
-      # Suspicious if at least 2 bedrock depths are filled in and at least 1
-      # is NA, with all of the filled bedrock depths being shallower than 30 cm?
-      flag_suspicious = n_filled >= 2 & all_shallow & n_missing > 0,
-      # Most shallow bedrock depth reported
-      depth_bedrock_min =
-        round(min(replace_na(c_across(matches("^P[1-5]_depth_bedrock$")),
-                             100))),
-      # Deepest bedrock depth reported
-      depth_bedrock_max = case_when(
-        # If flagged as suspicious: ignore NAs for the average of P1-5
-        flag_suspicious ~
-          round(suppressWarnings(max(c_across(
-            matches("^P[1-5]_depth_bedrock$")),
-                    na.rm = TRUE))),
-        # If site_type is stony, and P2-5 are NA: only use P1
-        site_type == "Stony site" &
-          all(is.na(c_across(matches("^P[2-5]_depth_bedrock$")))) ~
-          round(replace_na(P1_depth_bedrock, 100)),
-        # Else, take the average P1-5 (assuming NA equals 100)
-        TRUE ~
-          round(max(replace_na(c_across(matches("^P[1-5]_depth_bedrock$")),
-                               100)))),
-      # Average depth bedrock (until which we will calculate the stocks)
-      depth_bedrock = case_when(
-        # If flagged as suspicious: ignore NAs for the average of P1-5
-        flag_suspicious ~
-          round(mean(c_across(matches("^P[1-5]_depth_bedrock$")),
-                     na.rm = TRUE)),
-        # If site_type is stony, and P2-5 are NA: only use P1
-        site_type == "Stony site" &
-          all(is.na(c_across(matches("^P[2-5]_depth_bedrock$")))) ~
-          round(replace_na(P1_depth_bedrock, 100)),
-        # Else, take the average P1-5 (assuming NA equals 100)
-        TRUE ~
-          round(mean(replace_na(c_across(matches("^P[1-5]_depth_bedrock$")),
-                                100)))),
       depth_bedrock_compiled = paste(
         as.character(round(c_across(matches("^P[1-9]_depth_bedrock$")))),
         collapse = ",")
       ) %>%
-    ungroup()
-
-  # TO DO: Maybe it would be good to compare this with the pictures from the
-  # field (especially for stony sites)
-
-  # TO DO: Check depths (now depth_bottom is sometimes shallower than
-  # depth_top), e.g., "UL__4__Ravna gora__NA"
-
-
-
-  ### INCONSISTENCY 5 ----
-
-  rule <- paste0("Bedrock depth is missing (NA) in some sampling points ",
-                 "(P1-5), while others report shallow bedrock. Please ",
-                 "confirm that all missing values are correctly marked as ",
-                 "NA (i.e., bedrock below 100 cm)")
-  rule_id <- "5"
-
-
-
-  # Records with a problem
-
-  recs_problem <- df_bedrock %>%
-    filter(flag_suspicious == TRUE)
-
-  inc <- recs_problem %>%
-    mutate(
-      inconsistency_reason = rule) %>%
-    # pivot longer to get one row per parameter
-    pivot_longer(
-      cols = matches("^P[1-5]_depth_bedrock$"),
-      names_to = "parameter",
-      values_to = "value"
+    ungroup() %>%
+    # Add censoring information
+    left_join(
+      df_bedrock_cens %>%
+        pivot_wider(
+          id_cols = c(plot_code_simple, site_type, depth_reached),
+          names_from = p_id,
+          values_from = c(depth, censoring)
+        ) %>%
+        rowwise() %>%
+        mutate(
+          depth_bedrock_cens_compiled = paste(
+            as.character(round(c_across(matches("^depth_P[1-9]$")))),
+            collapse = ","
+          ),
+          censoring_compiled = paste(
+            c_across(matches("^censoring_P[1-9]$")),
+            collapse = ","
+          )
+        ) %>%
+        ungroup() %>%
+        select(plot_code_simple, depth_reached, contains("compiled")),
+      by = "plot_code_simple"
     ) %>%
-    left_join(attribute_catalogue %>%
-                rename(parameter_description = descr,
-                       parameter_unit = unit),
-              by = join_by("parameter" == "column_name")) %>%
-    relocate(parameter_description, parameter_unit, .after = parameter) %>%
+    # Add summarised bedrock depth (posterior mean and 95% credible interval)
+    left_join(
+      df_bedrock_summ %>%
+        rename(depth_bedrock = .epred,
+               depth_bedrock_min = .lower,
+               depth_bedrock_max = .upper) %>%
+        select(plot_code_simple, starts_with("depth_bedrock")),
+      by = "plot_code_simple") %>%
     mutate(
-      # mark unique_inconsistency = TRUE only for the first parameter per record
-      unique_inconsistency = (grepl("^P1", parameter)),
-      source = "Survey123 app",
-      team = team_harmonized,
-      plot_code_app = code,
-      res_id_inst = res_id_harmonized,
-      sample_code = NA_character_,
-      rule_id = rule_id) %>%
-    mutate(value = as.character(value)) %>%
-    select(source, team, plot_code_app, res_id_inst, globalid, sample_code,
-           parameter, parameter_description, parameter_unit, value,
-           inconsistency_reason, unique_inconsistency, rule_id)
+      default = (
+        (site_type == "Standard site" &
+           depth_bedrock_compiled == "NA,NA,NA,NA,NA,NA,NA,NA,NA" &
+           depth_bedrock_cens_compiled == "100,100,100,100,100,30,30,30,30" &
+           censoring_compiled ==
+           "none,none,none,none,none,right,right,right,right") |
+          (site_type == "Stony site" &
+             depth_bedrock_compiled == "NA,NA,NA,NA,NA,NA,NA,NA,NA" &
+             depth_bedrock_cens_compiled == "100,30,30,30,30,30,30,30,30" &
+             censoring_compiled ==
+             "none,right,right,right,right,right,right,right,right")),
+      depth_bedrock_min = case_when(
+        site_type == "Standard site" & default == TRUE ~
+          # Take the mean of all standard site records without non-NA depths
+          round(1E2 * mean(
+            depth_bedrock_min[
+              site_type == "Standard site" & default == TRUE],
+            na.rm = TRUE)),
+        site_type == "Stony site" & default == TRUE ~
+          # Take the mean of all stony site records without non-NA depths
+          round(1E2 * mean(
+            depth_bedrock_min[
+              site_type == "Stony site" & default == TRUE],
+            na.rm = TRUE)),
+        TRUE ~ round(1E2 * depth_bedrock_min)
+        ),
+      depth_bedrock_max = case_when(
+        site_type %in% c("Standard site", "Stony site") &
+          depth_bedrock_compiled == "NA,NA,NA,NA,NA,NA,NA,NA,NA" ~ 100,
+        TRUE ~ round(1E2 * depth_bedrock_max)
+        ),
+      depth_bedrock = case_when(
+        # Take 100 for records without non-NA depths
+        # (both for standard and stony sites)
+        site_type %in% c("Standard site", "Stony site") &
+          default == TRUE ~ 100,
+        depth_bedrock_compiled == "0,0,0,0,0,0,0,0,0" ~ 0,
+        TRUE ~ round(1E2 * depth_bedrock)
+      )) %>%
+    select(-matches("^P[1-9]_depth_bedrock$")) %>%
+    left_join(
+      df_plot %>%
+        select(plot_code_simple,
+               wrb_ref_soil_group,
+               wrb_qualifier_1),
+      by = "plot_code_simple") %>%
+    relocate(
+      wrb_ref_soil_group, wrb_qualifier_1, .after = "site_type") %>%
+    relocate(ends_with("compiled"), .after = last_col())
 
-  inconsistencies <- bind_rows(
-    inconsistencies,
-    inc)
+  if (apply_corrections) {
+
+    df_bedrock <- df_bedrock %>%
+      mutate(
+        depth_bedrock = case_when(
+          # Explicitly mentioned in "P1_other_remarks_fragment"
+          # "Soil depth 74 cm"
+          # (this is plot-level because different depth reported for P1)
+          plot_code_simple == "UL__4__Ravna gora__NA" ~ 74,
+          TRUE ~ depth_bedrock
+          ))
+
+  } # End of "if apply_corrections"
 
 
 
@@ -927,50 +1958,36 @@ app_data_long <- function(app_data_wide) {
 
 
 
-  # 5. Reshape sample checklist into one record per code_layer per plot ----
+  # 7. Compile all layer-specific data ----
 
-  df_layers <- app_data %>%
-    select(-ends_with("dist"), -contains("thickness"), -contains("tamass"),
-           -vol_ring) %>%
-    rename_with(~ str_replace_all(., "eDNA", "edna")) %>%
-    rename_with(~ str_replace_all(., "(flamm|carbon)", "dist")) %>%
-    select(code, plot_code_simple, team_harmonized, globalid, res_id_harmonized,
-           wp, institute_sampling,
-           contains("OL"), contains("OFH"),
-           contains("M01"), contains("M13"), contains("M36"),
-           contains("M61")) %>%
-    mutate(across(-code, as.character)) %>%
-    pivot_longer(
-      cols = contains("OL") | contains("OFH") |
-        contains("M01") | contains("M13") | contains("M36") | contains("M61"),
-      names_to = "full_name",
-      values_to = "value"
-    ) %>%
-    mutate(
-      full_name = full_name %>%
-        str_replace_all(paste0("(",
-                               paste0(layers, collapse = "|"), ")"),
-                        "_\\1_") %>%
-        str_replace_all("__", "_") %>%
-        str_replace_all("^_|_$", ""),
-      code_layer = str_extract(full_name, paste0(layers, collapse = "|")),
-      variable = str_remove(full_name,
-                            paste0("_?", paste0(layers, collapse = "|"), "_?")),
-      variable = str_replace_all(variable, "__", "_"),
-      variable = str_replace_all(variable, "^_|_$", "")
-    ) %>%
-    select(code, plot_code_simple, team_harmonized, globalid, res_id_harmonized,
-           wp, institute_sampling,
-           code_layer, variable, value) %>%
-    pivot_wider(
-      names_from = variable,
-      values_from = value) %>%
-    rename(remarks_sample_dist = remarks_sample) %>%
-    # Automatically detect and convert columns that contain only
-    # numeric-convertible values to numeric class
-    mutate(across(
-      where(~ all(suppressWarnings(!is.na(as.numeric(.)) | is.na(.)))),
-      as.numeric))
+  df_layers_all <- df_layers %>%
+    left_join(df_properties,
+              by = join_by(code, code_layer)) %>%
+    left_join(df_ff_summ %>%
+                select(-plot_code_simple),
+              by = join_by(code, code_layer)) %>%
+    left_join(df_rings %>%
+                select(
+                  code, code_layer,
+                  vol_ring, count_rings, undist_sampling_points),
+              by = join_by(code, code_layer)) %>%
+    # Add average bedrock depth in order to update the lowest layer limit
+    # of the lowest layer of the profile
+    left_join(df_bedrock %>%
+                select(code, site_type,
+                       depth_bedrock, depth_bedrock_min, depth_bedrock_max,
+                       depth_bedrock_compiled, depth_bedrock_cens_compiled,
+                       depth_reached),
+              by = "code") %>%
+    select(-P1_num_undist_samples) %>%
+    relocate(site_type, .after = "code_layer") %>%
+    relocate(tamass, .before = dist) %>%
+    relocate(
+      contains("edna"), contains("back_up"), contains("_sampleID"),
+      .after = last_col()) %>%
+    relocate(contains("depth_bedrock"), .after = "P1_coaf_50mm")
+
+
 
 
 
@@ -978,89 +1995,166 @@ app_data_long <- function(app_data_wide) {
 
   ### INCONSISTENCY 6 ----
 
-  rule <- paste0("Volumetric percentage of coarse fragments > 50 mm should ",
-                 "not exceed that > 2 mm. You may have only indicated coarse ",
-                 "fragments between 2–50 mm under > 2 mm.")
+  if (create_inconsistency_report) {
 
-  rule_id <- "6"
+    rule <- paste0("Volumetric percentage of coarse fragments > 50 mm should ",
+                   "not exceed that > 2 mm. You may have only indicated ",
+                   "coarse fragments between 2–50 mm under > 2 mm.")
 
-
-  # Records with a problem
-
-  recs_problem <- df_layers %>%
-    filter(P1_coaf_50mm > P1_coaf_2mm)
-
-  inc <- recs_problem %>%
-    mutate(
-      inconsistency_reason = rule) %>%
-    # pivot longer to get one row per parameter
-    pivot_longer(
-      cols = c(P1_coaf_2mm, P1_coaf_50mm),
-      names_to = "parameter",
-      values_to = "value"
-    ) %>%
-    mutate(
-      parameter = case_when(
-        grepl("2mm", parameter) ~ #P1_m01coaf_2mm
-          paste0("P1_", tolower(code_layer), "coaf_2mm"),
-        grepl("50mm", parameter) ~ #P1_m01coaf_2mm
-          paste0("P1_", tolower(code_layer), "coaf_50mm"))) %>%
-    left_join(attribute_catalogue %>%
-                rename(parameter_description = descr,
-                       parameter_unit = unit),
-              by = join_by("parameter" == "column_name")) %>%
-    relocate(parameter_description, parameter_unit, .after = parameter) %>%
-    mutate(
-      # mark unique_inconsistency = TRUE only for the first parameter per record
-      unique_inconsistency = (grepl("2mm", parameter)),
-      source = "Survey123 app",
-      team = team_harmonized,
-      plot_code_app = code,
-      res_id_inst = res_id_harmonized,
-      sample_code = code_layer,
-      rule_id = rule_id) %>%
-    mutate(value = as.character(value)) %>%
-    select(source, team, plot_code_app, res_id_inst, globalid, sample_code,
-           parameter, parameter_description, parameter_unit, value,
-           inconsistency_reason, unique_inconsistency, rule_id)
-
-  inconsistencies <- bind_rows(
-    inconsistencies,
-    inc)
+    rule_id <- "6"
 
 
+    # Records with a problem
+
+    recs_problem <- df_layers_all %>%
+      filter(P1_coaf_50mm > P1_coaf_2mm)
+
+    inc <- recs_problem %>%
+      mutate(
+        inconsistency_reason = rule) %>%
+      # pivot longer to get one row per parameter
+      pivot_longer(
+        cols = c(P1_coaf_2mm, P1_coaf_50mm),
+        names_to = "parameter",
+        values_to = "value"
+      ) %>%
+      mutate(
+        parameter = case_when(
+          grepl("2mm", parameter) ~ #P1_m01coaf_2mm
+            paste0("P1_", tolower(code_layer), "coaf_2mm"),
+          grepl("50mm", parameter) ~ #P1_m01coaf_2mm
+            paste0("P1_", tolower(code_layer), "coaf_50mm"))) %>%
+      left_join(attribute_catalogue %>%
+                  rename(parameter_description = descr,
+                         parameter_unit = unit),
+                by = join_by("parameter" == "column_name")) %>%
+      relocate(parameter_description, parameter_unit, .after = parameter) %>%
+      mutate(
+        # mark unique_inconsistency = TRUE
+        # only for the first parameter per record
+        unique_inconsistency = (grepl("2mm", parameter)),
+        source = "Survey123 app",
+        team = team_harmonized,
+        plot_code_app = code,
+        res_id_inst = res_id_harmonized,
+        sample_code = code_layer,
+        rule_id = rule_id) %>%
+      mutate(value = as.character(value)) %>%
+      select(source, team, plot_code_app, res_id_inst, globalid, sample_code,
+             parameter, parameter_description, parameter_unit, value,
+             inconsistency_reason, unique_inconsistency, rule_id)
+
+    inconsistencies <- bind_rows(
+      inconsistencies,
+      inc)
+
+  } # End of "if create_inconsistency_report"
 
 
 
 
-  # 6. Compile all layer-specific data ----
 
-  df_layers_all <- df_layers %>%
-    left_join(df_properties,
-              by = join_by(code, code_layer)) %>%
-    left_join(df_sampling_points_summ,
-              by = join_by(code, code_layer)) %>%
-    left_join(df_rings %>%
-                select(-team_harmonized, -globalid, -res_id_harmonized,
-                       -plot_code_simple),
-              by = join_by(code, code_layer)) %>%
-    # Add average bedrock depth in order to update the lowest layer limit
-    # of the lowest layer of the profile
-    left_join(df_bedrock %>%
-                select(code,
-                       depth_bedrock, depth_bedrock_min, depth_bedrock_max,
-                       depth_bedrock_compiled),
-              by = "code") %>%
-    relocate(tamass, .before = dist) %>%
-    relocate(
-      contains("_sampleID"), .after = last_col()) %>%
+
+
+
+  if (apply_corrections) {
+
+    df_layers_all <- df_layers_all %>%
+      # ---
+      # Any MANUAL CORRECTIONS for the coarse fragment contents should go here!
+      # (manual corrections are based on comments in app, field photos,
+      #  feedback by partners, expert assessment)
+      # ---
+      mutate(
+        P1_coaf_2mm = case_when(
+          # Values 2 mm swapped with values 50 mm
+          plot_code_simple == "INBO__17__Kluisbos__NA" &
+            code_layer %in% c("M13", "M36", "M61") ~ 3,
+          plot_code_simple == "INCDS__1__Runcu__NA" & code_layer == "M36" ~ 40,
+          # TO DO: to be confirmed by partner (probably swapped)
+          plot_code_simple == "VUK__102__Doutnac__NA" &
+            code_layer == "M13" ~ 80,
+          # Mistake in app submission
+          plot_code_simple ==
+            "INBO__1__Zonienwoud-Joseph Zwaenepoel reservaat__Haras" ~ 1,
+          # WSL assumed that P1_coaf_2mm represents vol% 2-50 mm.
+          # One record is an exception to this (although they did not go
+          # that deep in this plot, so it will be replaced by some default
+          # if below depth bedrock)
+          plot_code_simple == "WSL__51__Tamangur__NA" &
+            code_layer == "M61" ~ 0,
+          TRUE ~ P1_coaf_2mm),
+        P1_coaf_50mm = case_when(
+          # Values 2 mm swapped with values 50 mm
+          plot_code_simple == "INBO__17__Kluisbos__NA" &
+            code_layer %in% c("M13", "M36", "M61") ~ 1,
+          plot_code_simple == "INCDS__1__Runcu__NA" & code_layer == "M36" ~ 30,
+          # TO DO: to be confirmed by partner (probably swapped)
+          plot_code_simple == "VUK__102__Doutnac__NA" &
+            code_layer == "M13" ~ 70,
+          TRUE ~ P1_coaf_50mm)
+      ) %>%
+      # Correct P1_coaf_2mm in case the partner wrongly interpreted it
+      # as vol% 2-50 mm
+      # ---
+      # Does "P1_coaf_2mm" accidentally represent "vol% 2-50 mm" instead of
+      # "vol% >2 mm" for all plots of the given sampling partner?
+      # Based on manual checking:
+        # BFNP: YES (confirmed by partner)
+        # BGD-NP: probably correct (confirmed by sum >100 vol%)
+        # LWF: YES (confirmed by partner)
+        # USV: probably correct
+        # CULS: YES (confirmed by partner)
+        # UCPH: probably correct
+        # IBL: probably correct
+        # IBER-BAS: YES
+        # INBO: correct
+        # NWFVA: correct (confirmed by sum >100 vol%)
+        # FVA-BW: correct (confirmed by sum >100 vol%)
+        # UL: probably correct (confirmed by sum >100 vol%)
+        # UNITBV: probably correct (confirmed by sum >100 vol%)
+        # UNITO + AlberIT - UNIRC: YES (confirmed by partner)
+        # UNIUD: YES
+        # VUK: correct (confirmed by sum >100 vol%, one record swapped values)
+        # WR: YES
+        # WSL: YES
+      mutate(
+        P1_coaf_2mm = case_when(
+          institute_sampling %in% c(
+            "AlberIT - UNIRC", "BFNP", "CULS", "IBER-BAS", "LWF",
+            "UNITO", "UNIUD", "WR", "WSL") ~
+            coalesce(P1_coaf_2mm, 0) + coalesce(P1_coaf_50mm, 0),
+          TRUE ~ P1_coaf_2mm)
+      ) %>%
+      # ---
+      # Any MANUAL CORRECTIONS for the field bulk density mass should go here!
+      # (manual corrections are based on comments in app, field photos,
+      #  feedback by partners, expert assessment)
+      # ---
+      mutate(
+        bulk_den = case_when(
+          plot_code_simple == "LWF__119_a__Stachel__NA" &
+            code_layer == "M01" ~ 709,
+          TRUE ~ bulk_den)
+      )
+
+  } # End of "if apply_corrections"
+
+
+
+
+
+  df_layers_all <- df_layers_all %>%
+    # Filter out forest floor layers that were absent (not collected)
+    filter(!(code_layer %in% c("OL", "OFH") &
+              dist_check == "Sample not collected")) %>%
     # Add a column "layer_number":
     # Sequential index assigned to each soil layer within a plot.
     # The upper layer (often forest floor) is designated
     # as layer number 1, and each successive layer below it is assigned
     # an incrementally higher number, such as 2, 3, 4 etc.
     mutate(
-      # give each layer a fixed order
+      # Give each layer a fixed order
       layer_sort = match(code_layer, layers)
     ) %>%
     arrange(code, layer_sort) %>%
@@ -1071,33 +2165,20 @@ app_data_long <- function(app_data_wide) {
     group_by(code) %>%
     # Add columns with the layer limits
     mutate(
-      # Upper depth
+      # Lower depth
       depth_bottom = case_when(
         code_layer == "OFH" ~ 0,
         # Lower depth OL: depends on whether there is any OFH below it
         code_layer == "OL" & any(code_layer == "OFH") ~
-          -thickness[code_layer == "OFH"],
+          -thickness[code_layer == "OFH"][1],
         code_layer == "OL" & !any(code_layer == "OFH") ~ 0,
-        # Below-ground layers: bottom depth is always the shallowest
-        # among the "theoretical depth" and bedrock depth. For example, M36 in
-        # a plot with bedrock appearing at 54 cm will have 54 cm
-        # (not 60 cm) as depth_bottom
-        code_layer == "M01" ~
-          ifelse(!is.na(depth_bedrock),
-                 min(c(10, depth_bedrock)),
-                 10),
-        code_layer == "M13" ~
-          ifelse(!is.na(depth_bedrock),
-                 min(c(30, depth_bedrock)),
-                 30),
-        code_layer == "M36" ~
-          ifelse(!is.na(depth_bedrock),
-                 min(c(60, depth_bedrock)),
-                 60),
-        code_layer == "M61" ~
-          ifelse(!is.na(depth_bedrock),
-                 min(c(100, depth_bedrock)),
-                 100),
+        # Below-ground layers: for now consider the full depth range until
+        # 100 cm (with theoretical depths), regardless of whether there
+        # is bedrock present or not.
+        code_layer == "M01" ~ 10,
+        code_layer == "M13" ~ 30,
+        code_layer == "M36" ~ 60,
+        code_layer == "M61" ~ 100,
         TRUE ~ NA_real_),
       depth_top = case_when(
         code_layer == "OFH" ~ -thickness,
@@ -1109,17 +2190,240 @@ app_data_long <- function(app_data_wide) {
         code_layer == "M13" ~ 10,
         code_layer == "M36" ~ 30,
         code_layer == "M61" ~ 60,
-        TRUE ~ NA_real_)) %>%
+        TRUE ~ NA_real_),
+      depth_bottom_bedrock = if_else(
+        coalesce(depth_bedrock, 100) > depth_top,
+        # If bedrock appears below or in the given layer
+        case_when(
+          # Below-ground layers: bottom depth until bedrock if present in the
+          # layer (i.e., the shallowest among the "theoretical depth" and
+          # bedrock depth. For example, M36 in a plot with bedrock appearing
+          # at 54 cm will have 54 cm (not 60 cm) as depth_bottom_bedrock
+          code_layer == "M01" ~
+            ifelse(!is.na(depth_bedrock),
+                   min(c(10, depth_bedrock)),
+                   10),
+          code_layer == "M13" ~
+            ifelse(!is.na(depth_bedrock),
+                   min(c(30, depth_bedrock)),
+                   30),
+          code_layer == "M36" ~
+            ifelse(!is.na(depth_bedrock),
+                   min(c(60, depth_bedrock)),
+                   60),
+          code_layer == "M61" ~
+            ifelse(!is.na(depth_bedrock),
+                   min(c(100, depth_bedrock)),
+                   100),
+          TRUE ~ depth_bottom),
+        # If bedrock appears above the upper boundary of the layer
+        NA_real_
+      ),
+      thickness = case_when(
+        !is.na(thickness) ~ thickness,
+        !is.na(depth_bottom_bedrock) ~ (depth_bottom_bedrock - depth_top)
+      )
+      ) %>%
     ungroup() %>%
     select(-layer_sort) %>%
     relocate(depth_top, depth_bottom, layer_number,
              thickness, thickness_min, thickness_max,
              depth_bedrock, depth_bedrock_min, depth_bedrock_max,
-             depth_bedrock_compiled,
-             .after = code_layer)
+             depth_bedrock_compiled, depth_bedrock_cens_compiled,
+             .after = code_layer) %>%
+    mutate(
+      # Add a column "P1_coaf_method" that explains how the values in
+      # P1_coaf_2mm and P1_coaf_50mm were determined
+      # (whether they are direct observations or they can be interpreted
+      #  as "NA" because below the depth reached in P1)
+      P1_depth_reached =
+        # Depth reached in P1
+        case_when(
+          plot_code_simple %in% c(
+            # make sure that vol% coarse fragments of
+            # "WSL__39__Combe Biosse__NA" remains 0 below 30 cm
+            # (in spite of high vol% shallower)
+            "WSL__39__Combe Biosse__NA", # 0 vol% M36 is correct!
+            "BGD-NP__1__Berchtesgaden National Park__F023",
+            "WSL__21__Tariche Bois Banal__NA",
+            "LWF__65_a__Friedergries__NA") ~ depth_reached,
+          plot_code_simple == "VUK__36__Hadecka planinka__NA" ~ 30,
+          TRUE ~ as.numeric(sub(",.*", "", depth_bedrock_cens_compiled))),
+      P1_coaf_method = case_when(
+        grepl("^M", code_layer) &
+          (P1_depth_reached > depth_top) ~ "Direct observation",
+        grepl("^M", code_layer) ~ "Default below observations",
+        TRUE ~ NA_character_)
+      ) %>%
+    relocate(P1_coaf_method, P1_depth_reached,
+             .after = "P1_coaf_50mm")
 
 
 
+
+
+
+
+  ### INCONSISTENCY 12 ----
+
+  if (create_inconsistency_report) {
+
+    rule <- paste0("P1 reports 100 vol% coarse fragments for this layer, ",
+                   "while (disturbed) samples were collected at other points ",
+                   "in the same layer, indicating that fine earth was ",
+                   "present. This may reflect spatial variation. The plot-",
+                   "representative coarse fragment content will be capped at ",
+                   "minimum 80 vol% so that this layer contributes to the ",
+                   "carbon stock.")
+
+    rule_id <- "12"
+
+
+    # Records with a problem
+
+    recs_problem <- df_layers_all %>%
+      # As VUK provided detailed spatial information on vol% coarse fragments
+      filter(institute_sampling != "VUK") %>%
+      filter((P1_coaf_2mm == 100) &
+               (dist_check == "Sample collected"))
+
+    inc <- recs_problem %>%
+      mutate(
+        inconsistency_reason = rule) %>%
+      mutate(P1_coaf_2mm = as.character(P1_coaf_2mm),
+             P1_coaf_50mm = as.character(P1_coaf_50mm)) %>%
+      # pivot longer to get one row per parameter
+      pivot_longer(
+        cols = c(P1_coaf_2mm, P1_coaf_50mm, dist_check),
+        names_to = "parameter",
+        values_to = "value"
+      ) %>%
+      mutate(
+        parameter = case_when(
+          grepl("2mm", parameter) ~ #P1_m01coaf_2mm
+            paste0("P1_", tolower(code_layer), "coaf_2mm"),
+          grepl("50mm", parameter) ~ #P1_m01coaf_2mm
+            paste0("P1_", tolower(code_layer), "coaf_50mm"),
+          grepl("check", parameter) ~ #m01_carbon_check
+            paste0(tolower(code_layer), "_carbon_check")
+          )) %>%
+      left_join(attribute_catalogue %>%
+                  rename(parameter_description = descr,
+                         parameter_unit = unit),
+                by = join_by("parameter" == "column_name")) %>%
+      relocate(parameter_description, parameter_unit, .after = parameter) %>%
+      mutate(
+        # mark unique_inconsistency = TRUE
+        # only for the first parameter per record
+        unique_inconsistency = (grepl("2mm", parameter)),
+        source = "Survey123 app",
+        team = team_harmonized,
+        plot_code_app = code,
+        res_id_inst = res_id_harmonized,
+        sample_code = code_layer,
+        rule_id = rule_id) %>%
+      mutate(value = as.character(value)) %>%
+      select(source, team, plot_code_app, res_id_inst, globalid, sample_code,
+             parameter, parameter_description, parameter_unit, value,
+             inconsistency_reason, unique_inconsistency, rule_id)
+
+    inconsistencies <- bind_rows(
+      inconsistencies,
+      inc)
+
+  } # End of "if create_inconsistency_report"
+
+
+
+  if (apply_corrections) {
+
+    df_layers_all <- df_layers_all %>%
+      relocate(plot_code_simple, .after = "institute_sampling") %>%
+      # select(depth_bedrock_compiled, depth_bedrock_cens_compiled,
+      #        depth_reached, contains("depth_bedrock"),
+      #        plot_code_simple, code_layer, layer_number,
+      #        contains("coaf"), P1_depth_reached) %>%
+      mutate(
+        P1_coaf_2mm_orig = P1_coaf_2mm,
+        P1_coaf_50mm_orig = P1_coaf_50mm
+      ) %>%
+      group_by(plot_code_simple) %>%
+      arrange(layer_number, .by_group = TRUE) %>%
+      # STEP 1: Info from layer above
+      mutate(
+        prev_method = lag(P1_coaf_method),
+        prev_coaf   = lag(P1_coaf_2mm),
+        prev_layer  = lag(code_layer)
+      ) %>%
+      # STEP 2:
+      # Set vol% coarse fragments to NA when not directly observed or 100
+      mutate(
+        P1_coaf_2mm = case_when(
+          # Forest floor layers (assumption: no stones)
+          grepl("^O", code_layer) ~ NA_real_,
+          # Always NA if 100
+          P1_coaf_2mm == 100 ~ NA_real_,
+          # Default below obs → NA, except special condition
+          P1_coaf_method == "Default below observations" &
+            !(prev_method == "Direct observation" &
+                P1_coaf_2mm >= 80 & P1_coaf_2mm < 100) ~ NA_real_,
+          TRUE ~ P1_coaf_2mm
+        ),
+        P1_coaf_50mm = case_when(
+          is.na(P1_coaf_2mm) ~ NA_real_,
+          TRUE ~ P1_coaf_50mm)
+      ) %>%
+      # STEP 3: Apply LOCF within mineral layers
+      group_by(plot_code_simple) %>%
+      mutate(
+        P1_coaf_2mm_filled = P1_coaf_2mm,
+        P1_coaf_50mm_filled = P1_coaf_50mm
+      ) %>%
+      # LOCF (downward fill)
+      fill(P1_coaf_2mm_filled, .direction = "down") %>%
+      fill(P1_coaf_50mm_filled, .direction = "down") %>%
+      # STEP 4: Gap-fill using LOCF or 80
+      mutate(
+        P1_coaf_2mm = case_when(
+          # Only for mineral layers with NA
+          grepl("^M", code_layer) & is.na(P1_coaf_2mm) &
+            grepl("^M", prev_layer) &
+            !is.na(P1_coaf_2mm_filled) &
+            P1_coaf_2mm_filled >= 80 &
+            P1_coaf_2mm_filled < 100 ~ P1_coaf_2mm_filled,
+          # Otherwise → 80
+          grepl("^M", code_layer) & is.na(P1_coaf_2mm) ~ 80,
+          TRUE ~ P1_coaf_2mm
+        ),
+        P1_coaf_50mm = case_when(
+          # Only for mineral layers with NA
+          grepl("^M", code_layer) & is.na(P1_coaf_50mm) &
+            grepl("^M", prev_layer) &
+            !is.na(P1_coaf_50mm_filled) &
+            P1_coaf_2mm_filled >= 80 &
+            P1_coaf_2mm_filled < 100 ~ P1_coaf_50mm_filled,
+          # Otherwise → 80
+          grepl("^M", code_layer) & is.na(P1_coaf_50mm) ~ 80,
+          TRUE ~ P1_coaf_50mm)
+      ) %>%
+      ungroup() %>%
+      select(-prev_method, -prev_coaf, -prev_layer,
+             -contains("_filled"), -contains("_orig"))
+
+
+  } # End of "if apply_corrections"
+
+
+
+
+
+
+
+
+
+
+
+  if (create_inconsistency_report) {
 
   ### INCONSISTENCY 7 ----
 
@@ -1288,6 +2592,9 @@ app_data_long <- function(app_data_wide) {
 
   ### INCONSISTENCY 9 ----
 
+  # Note: after implementing Bayesian summarising of bedrock depths,
+  # no layers appear below depth_bedrock_max (a few appear below depth_bedrock)
+
   rule <- paste0("For depths below the deepest reported bedrock depth, ",
                  "no samples are expected to be taken")
 
@@ -1355,10 +2662,17 @@ app_data_long <- function(app_data_wide) {
 
   ### INCONSISTENCY 10 ----
 
+  # Note: this check becomes redundant, as this has been manually checked
+  # and corrected earlier in the script.
+  # (Potential TO DO: expand for undisturbed & cross-check with sample list
+  #  - note: this is also manually checked and corrected)
+
+
   rule <- paste0("Samples weighing more than 0 g are expected to show ",
                  "'sample collected'")
 
   rule_id <- "10"
+
 
 
   # Records with a problem
@@ -1409,87 +2723,269 @@ app_data_long <- function(app_data_wide) {
     inconsistencies,
     inc)
 
+  } # End of "if create_inconsistency_report"
 
 
 
 
 
-# 7. Compile all plot-specific data ----
 
-plot_columns <- c(
-  "survey_date",
-  "humus_form", "wrb_ref_soil_group", "wrb_qualifier_1", "wrb_qualifier_supp",
-  "latitude", "longitude", "coordinates", "hor_accuracy",
-  "air_temperature", "actual_weather", "past_weather",
-  "soil_condition", "soil_dist", "macrorelief", "slope_type", "slope_deg",
-  "moisture", "site_type", "scheme", "num_photo_humus", "management_type",
-  "start_survey", "end_survey", "survey_month", "survey_year",
-  "P2_expected_pos", "P2_describe_pos",
-  "P3_expected_pos", "P3_describe_pos",
-  "P4_expected_pos", "P4_describe_pos",
-  "P5_expected_pos", "P5_describe_pos",
-  "P6_expected_pos", "P6_describe_pos",
-  "P7_expected_pos", "P7_describe_pos",
-  "P8_expected_pos", "P8_describe_pos",
-  "P9_expected_pos", "P9_describe_pos")
 
-d_soil_group <- read.csv("./data/additional_data/d_soil_group.csv",
-                         sep = ";")
-d_soil_adjective <- read.csv("./data/additional_data/d_soil_adjective.csv",
-                             sep = ";")
+# 8. Update df_plot ----
 
-df_plot <- app_data %>%
-  select(code,
-         composed_site_id, plot_code, plot_code_simple,
-         team_harmonized, institute_sampling,
-         any_of(plot_columns)) %>%
-  left_join(
-    df_properties_plot,
-    by = "code") %>%
-  rename(code_wrb_ref_soil_group = wrb_ref_soil_group,
-         code_wrb_qualifier_1 = wrb_qualifier_1) %>%
-  left_join(
-    d_soil_group %>%
-      select(code, description) %>%
-      rename(wrb_ref_soil_group = description),
-    by = join_by("code_wrb_ref_soil_group" == "code")) %>%
-  left_join(
-    d_soil_adjective %>%
-      select(code, description) %>%
-      rename(wrb_qualifier_1 = description),
-    by = join_by("code_wrb_qualifier_1" == "code")) %>%
-  relocate(wrb_ref_soil_group, wrb_qualifier_1,
-           .before = code_wrb_ref_soil_group) %>%
+df_plot <- df_plot %>%
+    # Add bedrock depth
+    left_join(df_bedrock %>%
+                select(code,
+                       depth_bedrock, depth_bedrock_min, depth_bedrock_max,
+                       depth_reached),
+              by = "code")
+
+
+
+
+
+
+
+
+
+# 9. Compile sampling point-specific data ----
+# (e.g., to assist with determining any need for right-censoring bedrock depths)
+
+df_sampling_points <-
+  # ---
+  # 1. Comments disturbed samples
+  # ---
+  app_data %>%
+  filter(wp == "WP2") %>%
+  select(institute_sampling, plot_code_simple,
+         (contains("M01") | contains("M13") | contains("M36") |
+            contains("M61")) &
+           starts_with("P") &
+           contains("dist") &
+           # These columns do not contain properties
+           !ends_with("_undist_samples")
+  ) %>%
+  mutate(across(matches("^P\\d+_M\\d+"), as.character)) %>%
+  pivot_longer(
+    cols = matches("^P\\d+_M\\d+"),
+    names_to = c("sampling_point", "code_layer", "variable"),
+    names_pattern = "^(P\\d+)_?(M\\d+)([a-z0-9_]+)$",
+    values_to = "value"
+  ) %>%
+  # There is a problem with some codes (probably due to Excel)
+  # They are expected in the format "10,60,30", but some values show
+  # "10.6" (which should probably be "10,60")
+  # Correct
   mutate(
-    humus_form = str_to_title(humus_form))
+    # First correct some very long values like "40.299999999999997"
+    # (should be "40,30")
+    value = if_else(
+      str_length(value) > 15 & str_count(value, "\\.") == 1,
+      suppressWarnings(str_replace(sprintf("%.2f", as.numeric(value)),
+                                   "\\.", ",")),
+      value),
+    value = case_when(
+      # If there's a dot with only 1 digit after it, add 0 and replace dot
+      # with comma
+      str_detect(value, "\\.\\d$") ~ str_replace(value, "\\.(\\d)$", ",\\10"),
+      # If there's a dot with 2 digits after it, just replace dot with comma
+      str_detect(value, "\\.\\d{2}$") ~ str_replace(value, "\\.", ","),
+      TRUE ~ value)) %>%
+  pivot_wider(
+    names_from = variable,
+    values_from = value
+  ) %>%
+  mutate(dist = strsplit(as.character(dist), ",")) %>%
+  unnest(dist) %>%  # Unnest the list into individual rows
+  mutate(dist = na_if(dist, "99")) %>%
+  left_join(d_properties %>%
+              rename(properties = property) %>%
+              mutate(code = as.character(code)),
+            by = join_by("dist" == "code")) %>%
+  # Summarise all the properties (reported under the disturbed sampling)
+  # across all sampling points
+  # (more frequently reported data are first)
+  group_by(plot_code_simple, code_layer, sampling_point) %>%
+  reframe(
+    dist = if_else(
+      all(is.na(properties)),
+      NA_character_,
+      paste(sort(properties), collapse = ", "))
+  ) %>%
+  ungroup() %>%
+  rename(properties = dist) %>%
+  pivot_wider(
+    names_from = code_layer,
+    values_from = properties,
+    names_prefix = "props_"
+  ) %>%
+  rename(p_id = sampling_point) %>%
+  left_join(
+    # ---
+    # 2. Add maximum depth reached with undisturbed sampling
+    #    (assuming that data are correctly reported)
+    # ---
+    df_rings %>%
+      select(plot_code_simple, code_layer, undist_sampling_points) %>%
+      mutate(undist_sampling_points =
+               strsplit(as.character(undist_sampling_points), ",")) %>%
+      unnest(undist_sampling_points) %>%
+      rename(p_id = undist_sampling_points) %>%
+      mutate(
+        depth_bottom = case_when(
+          code_layer == "M01" ~ 10,
+          code_layer == "M13" ~ 30,
+          code_layer == "M36" ~ 60,
+          code_layer == "M61" ~ 100)
+      ) %>%
+      group_by(plot_code_simple, p_id) %>%
+      reframe(
+        depth_reached_undist = max(depth_bottom, na.rm = TRUE)) %>%
+      # Complete cases for which no undisturbed samples could be collected
+      complete(
+        plot_code_simple,
+        p_id = paste0("P", 1:5),
+        fill = list(depth_reached_undist = 0)
+      ),
+    by = join_by("plot_code_simple", "p_id")
+  ) %>%
+  left_join(
+    # ---
+    # 3. Add remarks disturbed samples
+    # ---
+    app_data %>%
+      select(plot_code_simple,
+             ends_with("_notes_dist_samples")) %>%
+      pivot_longer(
+        cols = matches("P\\d{1}_"),
+        names_to = "p_id",
+        values_to = "notes_dist"
+      ) %>%
+      mutate(
+        p_id = gsub("_notes_dist_samples", "", p_id)),
+    by = join_by("plot_code_simple", "p_id")
+  ) %>%
+  left_join(
+    # ---
+    # 4. Add reason bulk density
+    # ---
+    app_data %>%
+      select(plot_code_simple,
+             ends_with("_reason_bulk_den")) %>%
+      pivot_longer(
+        cols = matches("P\\d{1}_"),
+        names_to = "p_id",
+        values_to = "reason_bulk_den"
+      ) %>%
+      mutate(
+        p_id = gsub("_reason_bulk_den", "", p_id),
+        reason_bulk_den = if_else(
+          reason_bulk_den == "()",
+          NA_character_,
+          reason_bulk_den)),
+    by = join_by("plot_code_simple", "p_id")
+  ) %>%
+  left_join(
+    # ---
+    # 5. Add notes bulk density
+    # ---
+    app_data %>%
+      select(plot_code_simple,
+             ends_with("_notes_bulk_den")) %>%
+      pivot_longer(
+        cols = matches("P\\d{1}_"),
+        names_to = "p_id",
+        values_to = "notes_bulk_den"
+      ) %>%
+      mutate(
+        p_id = gsub("_notes_bulk_den", "", p_id)),
+    by = join_by("plot_code_simple", "p_id")
+  ) %>%
+  left_join(
+    # ---
+    # 6. Add bedrock depth
+    # ---
+    df_bedrock_wide %>%
+      filter(wp == "WP2") %>%
+      select(
+        plot_code_simple, team_harmonized, site_type,
+        matches("P\\d{1}_")
+      ) %>%
+      pivot_longer(
+        cols = matches("P\\d{1}_"),
+        names_to = "p_id",
+        values_to = "depth_bedrock"
+      ) %>%
+      mutate(
+        p_id = gsub("_depth_bedrock", "", p_id)) %>%
+      select(-team_harmonized),
+    by = join_by("plot_code_simple", "p_id")
+  ) %>%
+  left_join(
+    # ---
+    # 7. Add "expected_pos" and "describe_pos"
+    # ---
+    app_data %>%
+      select(plot_code_simple,
+             ends_with("_expected_pos"), ends_with("_describe_pos")) %>%
+      pivot_longer(
+        cols = -plot_code_simple,
+        names_to = c("p_id", ".value"),
+        names_pattern = "(P[2-9])_(expected_pos|describe_pos)"
+      ),
+    by = join_by("plot_code_simple", "p_id")
+  ) %>%
+  left_join(
+    # ---
+    # 8. Add OL/OFH thickness and total mass
+    # ---
+    df_sampling_points_ff %>%
+      rename(p_id = sampling_point) %>%
+      select(plot_code_simple, p_id, code_layer, thickness, tamass) %>%
+      pivot_wider(
+        names_from = code_layer,
+        values_from = c(thickness, tamass),
+        names_glue = "{tolower(code_layer)}_{.value}"
+      ),
+    by = join_by("plot_code_simple", "p_id")
+  ) %>%
+  left_join(
+    # ---
+    # 9. Add remarks forest floor sample
+    # ---
+    app_data %>%
+      select(plot_code_simple,
+             ends_with("_remarks_fofloor_sample")) %>%
+      pivot_longer(
+        cols = -plot_code_simple,
+        names_to = c("p_id", ".value"),
+        names_pattern = "(P[1-9])_(.*)"
+      ),
+    by = join_by("plot_code_simple", "p_id")
+  ) %>%
+  relocate(site_type, .before = "p_id") %>%
+  relocate(contains("_pos"), contains("depth"), .after = "p_id")
 
 
-# Remark: sometimes there are issues with coordinates being in different
-# columns. If so, better update get_app_data() so that the coordinates
-# end up in latitude and longitude
 
 
-# TO DO: maybe one remaining issue, some partners may have reported slope
-# in % instead of degrees. I think this is the case for WSL (some plots).
-# Those would have to be corrected.
+# 10. Return datasets ----
 
+out <- list(
+  # Layer-specific data
+  df_layers = df_layers_all,
+  # Plot-specific data
+  df_plot = df_plot,
+  # Sampling point-specific data
+  df_sampling_points = df_sampling_points
+)
 
-# 8. Return datasets ----
+if (create_inconsistency_report) {
+  # Inconsistencies
+  out$inconsistencies <- as_tibble(inconsistencies)
+}
 
-# Using assign() instead of return() here, since multiple
-
-# Plot-specific data
-
-assign("df_plot", df_plot, envir = .GlobalEnv)
-cat(paste0("Object '", "df_plot", "' is imported in global environment.\n"))
-
-# Inconsistencies
-
-assign(name_export, inconsistencies, envir = .GlobalEnv)
-cat(paste0("Object '", name_export, "' is imported in global environment.\n"))
-
-# Layer-specific data
-
-return(df_layers_all)
+return(out)
 
 }
