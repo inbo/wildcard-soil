@@ -47,7 +47,7 @@ rf_overview <- data.frame(
                "FVA-BW|NWFVA",
                "DISAFA - UNITO|IBER-BAS|AlberIT - UNIRC|UCPH|WR|BGD-NP",
                "DISAFA - UNITO|IBER-BAS|AlberIT - UNIRC|UCPH|WR|BGD-NP",
-               "CULS",
+               "CULS|WSL",
                "CULS",
                "UL|UNITBV|INCDS|URK|WULS",
                "UL|UNITBV|INCDS|URK|WULS",
