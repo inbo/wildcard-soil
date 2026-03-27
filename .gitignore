@@ -16,6 +16,7 @@
 *.shx
 *.xls*
 *_files
+*.rds
 docs
 libs
 output
@@ -24,3 +25,4 @@ data
 data/sensitive_metadata
 wildcard-soil.Rproj
 src/sandbox
+models/
