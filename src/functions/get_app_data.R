@@ -1,5 +1,76 @@
 
-get_app_data <- function(path = NULL) {
+#' Import and harmonise Survey123 app data (wide format)
+#'
+#' This function automatically detects and imports all relevant raw
+#' Survey123 app export files located in a specified or default local directory
+#' and combines them into a single harmonised dataset. During the
+#' import process, redundant columns (originating from differences in variable
+#' names across files) are merged, empty columns are removed, harmonised plot
+#' identifiers are added, and columns are converted to the expected data
+#' classes (character or numeric).
+#'
+#' When converting variables to numeric, values that cannot be converted are
+#' optionally recorded in an inconsistency report.
+#'
+#' @param path Character string specifying the directory containing the raw
+#'   Survey123 export files. If `NULL` (default), a predefined default path
+#'   (./data/raw_data/app_data/Field-data/) will be used.
+#'
+#' @param create_inconsistency_report Logical. If `TRUE` (default), a report
+#'   listing values that could not be converted to numeric during data
+#'   harmonisation is created and returned. If `FALSE`, the conversion is
+#'   performed silently and no report is generated.
+#'
+#' @details
+#' The function performs several preprocessing steps to harmonise Survey123
+#' data originating from different partners or export files:
+#'
+#' \itemize{
+#' \item Imports all raw Survey123 data files located in the specified folder.
+#' \item Combines the files into a single dataset.
+#' \item Merges redundant variables that may have different column names
+#'       across files.
+#' \item Removes columns that contain no data.
+#' \item Adds harmonised plot identifiers.
+#' \item Converts variables to their expected data types (character or numeric).
+#' \item Optionally records values that cannot be converted to numeric in an
+#'       inconsistency report.
+#' }
+#'
+#' The resulting dataset remains in wide format (one record per plot), which
+#' can subsequently be converted to a long format using function
+#' ./src/functions/app_data_long() in the workflow.
+#'
+#' @return
+#' A named list containing:
+#'
+#' \itemize{
+#' \item `app_data_wide` – A data frame containing the harmonised Survey123
+#'       data in wide format.
+#' \item `inconsistencies` – *(optional)* A data frame listing values that
+#'       could not be converted to numeric during processing. This element
+#'       is only included when `create_inconsistency_report = TRUE`.
+#' }
+#'
+#' The returned objects can be accessed as follows:
+#'
+#' \preformatted{
+#' res <- get_app_data()
+#'
+#' app_data_wide <- res$app_data_wide
+#' inconsistencies_get_app_data <- res$inconsistencies
+#' }
+#'
+#' @examples
+#' \dontrun{
+#' # Import Survey123 data from the default directory
+#' res <- get_app_data()
+#' }
+#'
+#' @export
+
+get_app_data <- function(path = NULL,
+                         create_inconsistency_report = TRUE) {
 
   # Compiles the data from the survey123 app into one dataframe
   # (horizontal format), after downloading them into your local repository.
@@ -61,9 +132,6 @@ get_app_data <- function(path = NULL) {
   # This is the overview table where the link of each Survey123 app submission
   # with the WPs and composed_site_id is manually established
 
-  # TO DO:
-  # Add VUK WP3 data sampled in 2024 to the table
-
   identification_df_path <-
     excel_files[which(grepl("identification_sites", excel_files))]
 
@@ -91,9 +159,40 @@ get_app_data <- function(path = NULL) {
     filter(!(team == "INBO" & grepl("2024", date_time)))
 
 
+
+
+
+  # Plot coordinates ----
+  # In the initial output of the Survey123 app, coordinates were lacking
+  # for some plots (due to the difference between automatic and manual
+  # coordinate recording). This export from the app with complete coordinates
+  # was shared later.
+
+  coord_df_path <-
+    excel_files[which(grepl("WP2_plots", excel_files))]
+
+  assertthat::assert_that(file.exists(coord_df_path))
+
+  coord_df <-
+    suppressMessages(read_excel(coord_df_path)) %>%
+    mutate(GlobalID = str_remove_all(GlobalID, "[\\{\\}]") %>%
+             str_to_lower(),
+      latitude = coalesce(as.character(latitude),
+                          as.character(y)),
+      longitude = coalesce(as.character(longitude),
+                           as.character(x)),
+      latitude = as.numeric(str_replace(latitude, ",", ".")),
+      longitude = as.numeric(str_replace(longitude, ",", "."))) %>%
+    select(code, GlobalID, latitude, longitude)
+
+
+
+
+
   # Import and combine the other files ----
 
-  app_files <- excel_files[which(!grepl("identification_sites", excel_files))]
+  app_files <-
+    excel_files[which(!grepl("identification_sites|WP2_plots", excel_files))]
 
   # Any other xlsx files that are manually checked and that are not output data
   # from the Survey123 app (e.g. forest floor data)
@@ -241,19 +340,17 @@ get_app_data <- function(path = NULL) {
   })
 
 
-  # TO DO: At this point, you should first manually correct any inconsistencies,
-  # e.g., after receiving corrections from the partner
-
   # TO DO: use additional meteodata and eDNA sample masses for the additional
   # eDNA samples that were collected by NW-FVA (after their freezer broke down)
 
+
+
+  if (create_inconsistency_report) {
 
   # INCONSISTENCY 1 ----
 
   rule <- "Data expected to be numeric should be numeric."
   rule_id <- "1"
-
-  name_export <- "inconsistencies_app_numeric"
 
   source("./src/functions/get_attribute_catalogue_app.R")
   attribute_catalogue <- get_attribute_catalogue_app()
@@ -330,15 +427,11 @@ get_app_data <- function(path = NULL) {
               by = join_by("parameter" == "column_name")) %>%
     relocate(parameter_description, parameter_unit, .after = parameter)
 
-  assign(name_export, inconsistencies_app_numeric, envir = .GlobalEnv)
-  cat(paste0("Object '", name_export, "' is imported in global environment.\n"))
-
+} # End of "if create_inconsistency_report"
 
 
 
   # Improve columns, data classes and harmonised plot keys ----
-
-  layers <- c("OL", "OFH", "M01", "M13", "M36", "M61")
 
   app_data_wide <- app_data_wide %>%
     select(-x, -y, ) %>%
@@ -361,12 +454,31 @@ get_app_data <- function(path = NULL) {
       matches("(_eDNA1$|_eDNA2$|_edna1$|_edna2$)"),
       matches("(_back_up$|^m\\d{2}_bulk_den$)")),
       ~ as.numeric(gsub(",", ".", .x))
-    ))
+    )) %>%
+    left_join(
+      coord_df %>%
+        rename_with(
+          ~ paste0(.x, "_compl"), c(latitude, longitude)) %>%
+        select(-code),
+      by = join_by("globalid" == "GlobalID")) %>%
+    relocate(latitude_compl, .after = "latitude") %>%
+    relocate(longitude_compl, .after = "longitude") %>%
+    mutate(
+      # Some of the original coordinates were switched (e.g., CULS, WSL)
+      # Therefore, use the complete coordinate dataset provided by VUK
+      # as first priority. There are minor differences (rounding of the
+      # fifth value behind comma), which are anyway beyond the needed precision.
+      latitude = coalesce(latitude_compl,
+                          latitude),
+      longitude = coalesce(longitude_compl,
+                           longitude)) %>%
+    select(-latitude_compl, -longitude_compl)
 
     empty_cols <- names(app_data_wide)[colSums(!is.na(app_data_wide)) == 0]
 
     app_data_wide <- app_data_wide %>%
       select(-any_of(empty_cols))
+
 
 
 
@@ -485,8 +597,17 @@ get_app_data <- function(path = NULL) {
 
 
 
-  return(app_data_wide)
+  # Return datasets ----
 
+  out <- list(
+    app_data_wide = app_data_wide
+  )
 
+  if (create_inconsistency_report) {
+    # Inconsistencies
+    out$inconsistencies <- as_tibble(inconsistencies_app_numeric)
+  }
+
+  return(out)
 
 }
