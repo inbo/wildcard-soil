@@ -81,13 +81,13 @@ get_lab_data <- function() {
       tn  <- if (is.null(tn))  NA_real_ else tn
       tc  <- if (is.null(tc))  NA_real_ else tc
 
-      value <- case_when(
-        var == "TN" ~ tn,
-        var == "TC" ~ tc)
-
-      loq_value <- case_when(
-        var == "TN" ~ loq_tn,
-        var == "TC" ~ loq_tc)
+      if (var == "TN") {
+        value <- tn
+        loq_value <- loq_tn
+      } else if (var == "TC") {
+        value <- tc
+        loq_value <- loq_tc
+      }
 
       assertthat::assert_that(!is.null(value))
 
@@ -144,15 +144,16 @@ get_lab_data <- function() {
       tc  <- if (is.null(tc))  NA_real_ else tc
       tic <- if (is.null(tic)) NA_real_ else tic
 
-      value <- case_when(
-        var == "TN" ~ tn,
-        var == "TC" ~ tc,
-        var == "TIC" ~ tic)
-
-      urel <- case_when(
-        var == "TN" ~ urel_tn,
-        var == "TC" ~ urel_tc,
-        var == "TIC" ~ urel_tic)
+      if (var == "TN") {
+        value <- tn
+        urel <- urel_tn
+      } else if (var == "TC") {
+        value <- tc
+        urel <- urel_tc
+      } else if (var == "TIC") {
+        value <- tic
+        urel <- urel_tic
+      }
 
       assertthat::assert_that(!is.null(value))
 
@@ -182,11 +183,11 @@ get_lab_data <- function() {
     # loq_* : Limits of quantification. Defaults are values for analytical
     # lab INBO 2025
 
-    var_long <- case_when(
-      var == "TOC" ~ "c_organic_total",
-      var == "TC" ~ "c_total",
-      var == "TIC" ~ "c_inorganic_total",
-      var == "TN" ~ "n_total")
+    var_long <- switch(var,
+                       TOC = "c_organic_total",
+                       TC  = "c_total",
+                       TIC = "c_inorganic_total",
+                       TN  = "n_total")
 
     u_var <- compute_uncertainty(var = var,
                                  tc = tc,
@@ -243,13 +244,13 @@ get_lab_data <- function() {
       tn  <- if (is.null(tn))  NA_real_ else tn
       tc  <- if (is.null(tc))  NA_real_ else tc
 
-      value <- case_when(
-        var == "TN" ~ tn,
-        var == "TC" ~ tc)
-
-      loq_value <- case_when(
-        var == "TN" ~ loq_tn,
-        var == "TC" ~ loq_tc)
+      if (var == "TN") {
+        value <- tn
+        loq_value <- loq_tn
+      } else if (var == "TC") {
+        value <- tc
+        loq_value <- loq_tc
+      }
 
       assertthat::assert_that(!is.null(value))
 
@@ -312,11 +313,13 @@ get_lab_data <- function() {
     datax_lab_i <- lims_report_xtab(data_lab_i)
 
     datax_lab_i <- datax_lab_i %>%
+      # Convert dots in columns that look like numbers to commas.
       # Automatically detect and convert columns that contain only
       # numeric-convertible values to numeric class
       mutate(across(
-        where(~ all(suppressWarnings(!is.na(as.numeric(.)) | is.na(.)))),
-        as.numeric)) %>%
+        where(~ is.character(.) && all(grepl("^[0-9,\\.]+$", ., perl = TRUE))),
+        ~ as.numeric(gsub(",", ".", .))
+      )) %>%
       # Remove samples from duplicate analysis
       filter(!OrigineelStaal %in% samples_dup) %>%
       # Rename the column names in order to ignore the lab's test and result
@@ -327,7 +330,19 @@ get_lab_data <- function() {
         # if TIC col doesn't exist, create it and fill with 0
         "C_TIC_ANALYSER__T.IC.DS" =
         if (!"C_TIC_ANALYSER__T.IC.DS" %in% names(.)) 0 else
-          C_TIC_ANALYSER__T.IC.DS) %>%
+          C_TIC_ANALYSER__T.IC.DS,
+        # Same for texture columns (missing for forest floor)
+        "TEXTUUR_LD_LS13320_V__KLEI.04.6µm" =
+          if (!"TEXTUUR_LD_LS13320_V__KLEI.04.6µm" %in% names(.)) NA_real_ else
+            TEXTUUR_LD_LS13320_V__KLEI.04.6µm,
+        "TEXTUUR_LD_LS13320_V__LEEM.6.63µm" =
+          if (!"TEXTUUR_LD_LS13320_V__LEEM.6.63µm" %in% names(.)) NA_real_ else
+            TEXTUUR_LD_LS13320_V__LEEM.6.63µm,
+        "TEXTUUR_LD_LS13320_V__ZAND.63.2000µm" =
+          if (
+            !"TEXTUUR_LD_LS13320_V__ZAND.63.2000µm" %in% names(.)) NA_real_ else
+              TEXTUUR_LD_LS13320_V__ZAND.63.2000µm
+        ) %>%
       # Add the uncertainty ranges of all variables first
       rowwise() %>%
       mutate(toc_unc =
@@ -377,8 +392,9 @@ get_lab_data <- function() {
 
   }
 
-cat("\nNone of the lab results are ready for the following RFs:\n")
+cat("\n\n\nNone of the lab results are ready for the following RFs:\n")
 cat(rfs_no_results)
+cat("\n\n")
 
 return(as_tibble(data_lab))
 
