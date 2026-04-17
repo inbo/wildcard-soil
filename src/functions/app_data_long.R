@@ -248,6 +248,7 @@ app_data_long <- function(app_data_wide,
            -vol_ring) %>%
     rename_with(~ str_replace_all(., "eDNA", "edna")) %>%
     rename_with(~ str_replace_all(., "(flamm|carbon)", "dist")) %>%
+    rename_with(~ str_replace_all(., "No_point", "no_point")) %>%
     select(code, plot_code_simple, team_harmonized, globalid, res_id_harmonized,
            wp, institute_sampling,
            contains("OL"), contains("OFH"),
@@ -398,7 +399,22 @@ app_data_long <- function(app_data_wide,
     relocate(wrb_ref_soil_group, wrb_qualifier_1,
              .before = code_wrb_ref_soil_group) %>%
     mutate(
-      humus_form = str_to_title(humus_form))
+      humus_form = str_to_title(humus_form),
+      actual_weather = case_when(
+        actual_weather == "RA" ~ "rain",
+        actual_weather == "PC" ~ "partly cloudy",
+        actual_weather == "SU" ~ "sunny/clear",
+        TRUE ~ actual_weather),
+      past_weather = case_when(
+        past_weather == "WC3" ~ "no rain in the last 24 hours",
+        past_weather == "WC4" ~
+          "rainy without heavy rain in the last 24 hours",
+        TRUE ~ past_weather),
+      soil_condition = case_when(
+        soil_condition == "NO" ~ "normal",
+        TRUE ~ soil_condition)) %>%
+    rename_with(~ paste0(.x, "_dec"), c(latitude, longitude))
+
 
 
   # TO DO: Check coordinates
@@ -479,12 +495,23 @@ app_data_long <- function(app_data_wide,
 
   if (apply_corrections) {
 
+    # TO DO: check humus forms, e.g.,
+    # "UCPH__4__Norreskov__NA" should be Moder instead of Mor?
+    # "UL__7__Menina__NA" varies between Tangel and Mull due to erosion. Tangel
+    #    better since natural humus form disregarding slope?
+    # "UNITBV__2__Cozia__NA" Mull or Moder instead of Mor?
+    # "WR__5__Vijlnerbos__NA": is Tangel in NL possible? check pH
+    # "WSL__18__Fuerstenhalde__NA": should be Mull (no OFH)
+    # Humus forms of semi-terrestrials to "Semi-terrestrial"?
+    #    (e.g., Seeliwald, Boedmerenwald, Rejviz)
+
     df_plot <- df_plot %>%
       mutate(
         # TO DO: add any other plots with slopes reported as percentages
         slope_deg = case_when(
           # Convert slope from percent to degrees for WSL
-          institute_sampling == "WSL" ~ atan(slope_deg / 100) * 180 / pi
+          institute_sampling == "WSL" ~ atan(slope_deg / 100) * 180 / pi,
+          TRUE ~ slope_deg
         ),
         humus_form = case_when(
           # Humus form WSL Seeliwald (histosol) should not be Mor
@@ -522,7 +549,7 @@ app_data_long <- function(app_data_wide,
   df_sampling_points_ff <- app_data %>%
     select(
       code, team_harmonized, globalid, res_id_harmonized, plot_code_simple, wp,
-      surface_frame,
+      institute_sampling, surface_frame,
       matches(paste0("(^|_)", paste0(c("OL", "OFH"), collapse = "|"))) &
         starts_with("P") &
         (contains("thickness") | contains("tamass"))
@@ -531,17 +558,157 @@ app_data_long <- function(app_data_wide,
 
   if (apply_corrections) {
 
-    # df_sampling_points_ff <- df_sampling_points_ff %>%
-    #   # ---
-    #   # Any MANUAL CORRECTIONS for thickness/tamass per point should go here!
-    #   # (manual corrections are based on comments in app, field photos,
-    #   #  feedback by partners, expert assessment)
-    #   # ---
-    #   mutate(
-    #
-    #   )
+    df_sampling_points_ff <- df_sampling_points_ff %>%
+      # ---
+      # Any MANUAL CORRECTIONS for thickness/tamass per point should go here!
+      # (manual corrections are based on comments in app, field photos,
+      #  feedback by partners, expert assessment)
+      # ---
+      mutate(
+        P1_OL_thickness = case_when(
+          # Correction suggested by partner based on detected inconsistency
+          plot_code_simple == "LWF__119_a__Stachel__NA" ~ 0.3,
+          TRUE ~ P1_OL_thickness
+        ),
+        P1_OL_tamass = case_when(
+          # Mistake in mass buckets
+          plot_code_simple ==
+            "INBO__1__Zonienwoud-Joseph Zwaenepoel reservaat__1stExtension" ~
+            30.7,
+          TRUE ~ P1_OL_tamass
+        ),
+        P1_OFH_thickness = case_when(
+          # Correction suggested by partner based on detected inconsistency
+          # (instead of 0.5)
+          plot_code_simple == "UNITBV__2__Cozia__NA" ~ 1.5,
+          # Probably a typo (3.9 instead of 39, based on other sampling
+          # points and based on photo humus at P1)
+          plot_code_simple == "NWFVA__03-049__Haringer Berg__NA" ~ 3.9,
+          TRUE ~ P1_OFH_thickness
+        ),
+        P1_OFH_tamass = case_when(
+          # Correction suggested by partner based on detected inconsistency
+          plot_code_simple == "LWF__65_a__Friedergries__NA" ~ 2614,
+          # Mistake in mass buckets
+          plot_code_simple ==
+            "INBO__1__Zonienwoud-Joseph Zwaenepoel reservaat__1stExtension" ~
+            100,
+          TRUE ~ P1_OFH_tamass
+        ),
+        P2_OL_tamass = case_when(
+          # Partner asked to subtract the mass of the bucket (288)
+          plot_code_simple == "BGD-NP__1__Berchtesgaden National Park__F059" ~
+            391 - 208,
+          # Mistake in mass buckets
+          plot_code_simple ==
+            "INBO__1__Zonienwoud-Joseph Zwaenepoel reservaat__1stExtension" ~
+            67,
+          TRUE ~ P2_OL_tamass
+        ),
+        P2_OFH_tamass = case_when(
+          # Correction suggested by partner based on detected inconsistency
+          plot_code_simple == "LWF__65_a__Friedergries__NA" ~ 5440,
+          # Mistake in mass buckets
+          plot_code_simple ==
+            "INBO__1__Zonienwoud-Joseph Zwaenepoel reservaat__1stExtension" ~
+            411,
+          TRUE ~ P2_OFH_tamass
+        ),
+        P3_OL_thickness = case_when(
+          # Typo
+          plot_code_simple == "CULS__181__Slovakia_Zadna Ticha_spruce__NA" ~
+            1.5,
+          TRUE ~ P3_OL_thickness
+        ),
+        P3_OL_tamass = case_when(
+          # Mistake in mass buckets
+          plot_code_simple ==
+            "INBO__1__Zonienwoud-Joseph Zwaenepoel reservaat__1stExtension" ~
+            39,
+          TRUE ~ P3_OL_tamass
+        ),
+        P3_OFH_tamass = case_when(
+          # Typo reported by partner, formerly 471 which is value for P2
+          plot_code_simple == "FVA-BW__588__Altlochkar-Rotwasser__NA" ~ 1385,
+          # Correction suggested by partner based on detected inconsistency
+          plot_code_simple == "LWF__65_a__Friedergries__NA" ~ 2333,
+          # Mistake in mass buckets
+          plot_code_simple ==
+            "INBO__1__Zonienwoud-Joseph Zwaenepoel reservaat__1stExtension" ~
+            556,
+          TRUE ~ P3_OFH_tamass
+        ),
+        P4_OL_thickness = case_when(
+          # Correction suggested by partner based on detected inconsistency
+          plot_code_simple == "LWF__119_a__Stachel__NA" ~ 0.3,
+          TRUE ~ P4_OL_thickness
+        ),
+        P4_OL_tamass = case_when(
+          # Mistake in mass buckets
+          plot_code_simple ==
+            "INBO__1__Zonienwoud-Joseph Zwaenepoel reservaat__1stExtension" ~
+            38,
+          TRUE ~ P4_OL_tamass
+        ),
+        P4_OFH_tamass = case_when(
+          # Correction suggested by partner based on detected inconsistency
+          plot_code_simple == "LWF__65_a__Friedergries__NA" ~ 5481,
+          # Mistake in mass buckets
+          plot_code_simple ==
+            "INBO__1__Zonienwoud-Joseph Zwaenepoel reservaat__1stExtension" ~
+            412,
+          TRUE ~ P4_OFH_tamass
+        ),
+        P5_OL_tamass = case_when(
+          # Mistake in mass buckets
+          plot_code_simple ==
+            "INBO__1__Zonienwoud-Joseph Zwaenepoel reservaat__1stExtension" ~
+            66.9,
+          TRUE ~ P5_OL_tamass
+        ),
+        P5_OFH_tamass = case_when(
+          # Correction suggested by partner based on detected inconsistency
+          plot_code_simple == "LWF__65_a__Friedergries__NA" ~ 1506,
+          # Mistake in mass buckets
+          plot_code_simple ==
+            "INBO__1__Zonienwoud-Joseph Zwaenepoel reservaat__1stExtension" ~
+            759.9,
+          TRUE ~ P5_OFH_tamass
+        ),
+        # Replace all P2-P5 forest floor data by NA for Seeliwald
+        # (since only P1 was sampled)
+        across(
+          matches("^P[2-5]_(OL|OFH)_(thickness|tamass)$"),
+          ~ if_else(plot_code_simple == "WSL__25__Seeliwald__NA",
+                    NA_real_,
+                    .x)
+        )
+      ) %>%
+      # ---
+      # Any MANUAL CORRECTIONS for surface_frame should go here!
+      # (manual corrections are based on comments in app, field photos,
+      #  feedback by partners, expert assessment)
+      # ---
+      mutate(
+        surface_frame = case_when(
+          # Must have been a typo based on other plots from partner
+          plot_code_simple == "UL__9__Gorjanci__NA" &
+            surface_frame == 0.625 ~ 0.0625,
+          # Feedback from partner
+          institute_sampling == "NWFVA" & surface_frame == 0.0599 ~ 0.059,
+          institute_sampling == "NWFVA" & surface_frame == 0.5990 ~ 0.059,
+          institute_sampling == "NWFVA" & surface_frame == 590 ~ 0.059,
+          institute_sampling == "NWFVA" & surface_frame == 1180 ~ 0.118,
+          # TO DO: necessary to correct forest floor sampling frame of
+          # UNIUD?
+          TRUE ~ surface_frame
+        )
+      )
 
   } # End of "if apply_corrections"
+
+
+
 
   df_sampling_points_ff <- df_sampling_points_ff %>%
     pivot_longer(
@@ -655,15 +822,85 @@ app_data_long <- function(app_data_wide,
 
 
 
+  if (apply_corrections) {
+
+    # Replace thickness and tamass of certain sampling points by NA
+    # if clearly implausible and an outlier
+    # This was manually verified, and will only be done for
+    # three sampling points:
+    # P2 of OFH in "NWFVA__01_020__Butterberg_SH__NA" (probably typo)
+    # P1 of OFH in "NWFVA__03-002__Franzhorn__a" (not toooo extreme but also
+    #               considered implausible by the partner)
+    # P3 of OFH in "CULS__176__Slovakia_Ploska_thermophilic__NA"
+
+    ol_dens_plaus <- c(0.01, 523.01)
+    ofh_dens_plaus <- c(0.03, 966.63)
+
+    df_sampling_points_ff <- df_sampling_points_ff %>%
+      mutate(
+        density = # kg m-3 (moist)
+          round(
+            tamass * 1E-3 / # kg field-moist material over sampling frame
+              (surface_frame * thickness * 1E-2), 2) # m3 volume
+      ) %>%
+      group_by(plot_code_simple, code_layer) %>%
+      mutate(
+        density_sd_rel = sd(density, na.rm = TRUE) /
+          mean(density, na.rm = TRUE)
+      ) %>%
+      ungroup() %>%
+      mutate(
+        # Flag sampling point when density is implausible and an outlier
+        flag = case_when(
+          code_layer == "OL" &
+            # Criterium 1:
+            # It should be an outlier compared to other sampling points
+            # (high relative standard deviation) and the layer should be
+            # sufficiently thick for a robust conclusion to exclude it
+            (!is.na(thickness) &
+               (thickness > 1 &
+                  !is.na(density_sd_rel) & density_sd_rel > 0.32) |
+               (thickness > 0.1 &
+                  !is.na(density_sd_rel) & density_sd_rel > 0.93)) &
+            # Criterium 2:
+            # The density should be implausible
+            (density < ol_dens_plaus[1] | density > ol_dens_plaus[2]) &
+            # Exception for this plot, where the outlier was caused by P3
+            # being semi-terrestrial (HF instead of OL)
+            (plot_code_simple != "INBO__14__Sevendonk__Quercion") ~ TRUE,
+          code_layer == "OFH" &
+            (!is.na(thickness) &
+               (thickness > 1 &
+                  !is.na(density_sd_rel) & density_sd_rel > 0.32) |
+               (thickness > 0.1 &
+                  !is.na(density_sd_rel) & density_sd_rel > 0.93)) &
+            (density < ofh_dens_plaus[1] | density > ofh_dens_plaus[2]) ~ TRUE,
+          TRUE ~ FALSE
+        )) %>%
+      mutate(
+        thickness = if_else(flag, NA_real_, thickness),
+        tamass = if_else(flag, NA_real_, tamass)
+      ) %>%
+      select(-any_of(c("density", "density_sd_rel", "flag")))
+
+
+
+
+  } # End of "if apply_corrections"
+
+
+
+
 
 
 
   ## Summarise forest floor across sampling points ----
 
   df_ff_summ <- df_sampling_points_ff %>%
-    group_by(code, plot_code_simple, code_layer, surface_frame) %>%
+    group_by(code, institute_sampling,
+             plot_code_simple, code_layer, surface_frame) %>%
     reframe(
-      count_ff_frames = n(),
+      count_ff_frames = sum(!is.na(tamass)),
       thickness_min = ifelse(
         any(!is.na(thickness)),
         min(as.numeric(thickness), na.rm = TRUE),
@@ -692,39 +929,12 @@ app_data_long <- function(app_data_wide,
       tamass = ifelse(
         any(!is.na(tamass)),
         sum(as.numeric(tamass), na.rm = TRUE),
-        NA_real_)) %>%
-    ungroup()
+        NA_real_))
 
 
 
 
-  if (apply_corrections) {
 
-    # df_ff_summ <- df_ff_summ %>%
-    #   # ---
-    #   # Any MANUAL CORRECTIONS for surface_frame or count_ff_frames
-    #   # should go here!
-    #   # (e.g., WSL Seeliwald)
-    #   # (manual corrections are based on comments in app, field photos,
-    #   #  feedback by partners, expert assessment)
-    #   # ---
-    #   mutate(
-    #
-    #     #  TO DO: if surface_frame > 1: divide by 1E3
-    #     #  Check scripts NW-FVA
-    #
-    #   )
-
-
-    # TO DO script
-    # PIR: surface frame > 1: divide by 1E3
-
-
-
-  } # End of "if apply_corrections"
-
-
-  # TO DO (PIR): if surface_frame > 1: divide by 1E3
 
 
 
@@ -841,6 +1051,7 @@ app_data_long <- function(app_data_wide,
           plot_code_simple == "FVA-BW__62__Feldseewald__NA" ~ NA,
           plot_code_simple == "FVA-BW__621__Siedigkopf__NA" ~ NA,
           plot_code_simple == "FVA-BW__9__Napf__1109" ~ NA,
+          plot_code_simple == "LWF__119_a__Stachel__NA" ~ 1,
           plot_code_simple == "NWFVA__03-060__Meinsberg__NA" ~ 5,
           # TO DO: to be confirmed with partner if this is correctly interpreted
           plot_code_simple == "WSL__26__Bannhalde__NA" ~ 5,
@@ -1024,9 +1235,12 @@ app_data_long <- function(app_data_wide,
           # One ring based on communication with the partner
           plot_code_simple == "CULS__169__Slovakia_Padva_beech__NA" &
             code_layer == "M61" ~ 1,
-          # Four rings instead of five
+          # Three rings instead of five (second sampling event)
           plot_code_simple == "LWF__119_a__Stachel__NA" &
-            code_layer == "M36" ~ 4,
+            code_layer == "M36" ~ 3,
+          # Three rings instead of two (second sampling event)
+          plot_code_simple == "LWF__65_a__Friedergries__NA" &
+            code_layer == "M01" ~ 3,
           # Five rings
           plot_code_simple == "NWFVA__03-060__Meinsberg__NA" &
             code_layer == "M36" ~ 5,
@@ -1045,7 +1259,7 @@ app_data_long <- function(app_data_wide,
           # Special case: undisturbed sample was splitted into undisturbed
           # and disturbed sample at the central lab
           plot_code_simple == "WSL__53__Murgtal__NA" &
-            code_layer == "M61" ~ 0.3990493,
+            code_layer == "M61" ~ 0.6670326,
           # As confirmed by partner
           plot_code_simple == "WSL__6__St. Jean__NA" &
             code_layer == "M01" ~ 3,
@@ -1118,9 +1332,12 @@ app_data_long <- function(app_data_wide,
           # Probably, five rings were taken in total
           plot_code_simple == "FVA-BW__9__Napf__1109" &
             code_layer %in% c("M36", "M61") ~ "P1,P1,P1,P1,P1",
-          # Four rings instead of five
+          # Three rings instead of five (second sampling event)
           plot_code_simple == "LWF__119_a__Stachel__NA" &
-            code_layer == "M36" ~ "P1,P1,P1,P1",
+            code_layer == "M36" ~ "P1,P1,P1",
+          # Three rings instead of two (second sampling event)
+          plot_code_simple == "LWF__65_a__Friedergries__NA" &
+            code_layer == "M01" ~ "P1,P1,P1",
           # Probably, five rings were taken in total
           plot_code_simple == "NWFVA__03-019__Stoeberhai__NA" &
             code_layer == "M36" ~ "P1,P1,P1,P1,P1",
@@ -1964,7 +2181,7 @@ app_data_long <- function(app_data_wide,
     left_join(df_properties,
               by = join_by(code, code_layer)) %>%
     left_join(df_ff_summ %>%
-                select(-plot_code_simple),
+                select(-plot_code_simple, -institute_sampling),
               by = join_by(code, code_layer)) %>%
     left_join(df_rings %>%
                 select(
@@ -2074,9 +2291,10 @@ app_data_long <- function(app_data_wide,
           # TO DO: to be confirmed by partner (probably swapped)
           plot_code_simple == "VUK__102__Doutnac__NA" &
             code_layer == "M13" ~ 80,
-          # Mistake in app submission
+          # Mistake in app submission (rare anthropogenic slag)
           plot_code_simple ==
-            "INBO__1__Zonienwoud-Joseph Zwaenepoel reservaat__Haras" ~ 1,
+            "INBO__1__Zonienwoud-Joseph Zwaenepoel reservaat__Haras" &
+            grepl("^M", code_layer) ~ 0,
           # WSL assumed that P1_coaf_2mm represents vol% 2-50 mm.
           # One record is an exception to this (although they did not go
           # that deep in this plot, so it will be replaced by some default
@@ -2092,6 +2310,10 @@ app_data_long <- function(app_data_wide,
           # TO DO: to be confirmed by partner (probably swapped)
           plot_code_simple == "VUK__102__Doutnac__NA" &
             code_layer == "M13" ~ 70,
+          # Mistake in app submission (rare anthropogenic slag)
+          plot_code_simple ==
+            "INBO__1__Zonienwoud-Joseph Zwaenepoel reservaat__Haras" &
+            grepl("^M", code_layer) ~ 0,
           TRUE ~ P1_coaf_50mm)
       ) %>%
       # Correct P1_coaf_2mm in case the partner wrongly interpreted it
@@ -2127,16 +2349,66 @@ app_data_long <- function(app_data_wide,
           TRUE ~ P1_coaf_2mm)
       ) %>%
       # ---
-      # Any MANUAL CORRECTIONS for the field bulk density mass should go here!
+      # Any MANUAL CORRECTIONS for the mass of field-moist (sub)samples should
+      # go here!
       # (manual corrections are based on comments in app, field photos,
       #  feedback by partners, expert assessment)
       # ---
+      left_join(
+        # For BGD-NP, "dist" masses include masses of bags. Subtract those
+        # (they differ per sample)
+        data.frame(
+          res_id = rep(c("F016","F066","F035","F099","F036",
+                         "F138","F048","F038","F073","F023","F059"), each = 2),
+          code_layer = rep(c("OL","OFH"), times = 11),
+          mass_bag_field = c(
+            11.49, 11.68,
+            11.71, 12.32,
+            12.10, 12.52,
+            11.91, 12.10,
+            11.24, 12.21,
+            18.32, 18.05,
+            13.20, 20.05,
+            15.06, 18.36,
+            12.15, 11.96,
+            11.35, 11.20,
+            19.96, 19.56)) %>%
+          mutate(
+            plot_code_simple =
+              paste0("BGD-NP__1__Berchtesgaden National Park__", res_id)) %>%
+          select(-res_id),
+        by = join_by("plot_code_simple", "code_layer")
+        ) %>%
       mutate(
         bulk_den = case_when(
+          # Second sampling event LWF
           plot_code_simple == "LWF__119_a__Stachel__NA" &
-            code_layer == "M01" ~ 709,
-          TRUE ~ bulk_den)
-      )
+            code_layer == "M01" ~ 632, # Dry: 565
+          plot_code_simple == "LWF__119_a__Stachel__NA" &
+            code_layer == "M36" ~ 521, # Dry: 440
+          plot_code_simple == "LWF__100_a__Donauhaenge__NA" &
+            code_layer == "M01" ~ 610, # Dry: 485
+          plot_code_simple == "LWF__57_a__Groppenhofer und Rieder Leite__NA" &
+            code_layer == "M01" ~ 575, # dry: 458
+          plot_code_simple == "LWF__65_a__Friedergries__NA" &
+            code_layer == "M01" ~ 722, # dry: 557
+          TRUE ~ bulk_den),
+        dist = case_when(
+          plot_code_simple == "LWF__119_a__Stachel__NA" &
+            code_layer == "M13" ~ 1379,
+          plot_code_simple == "LWF__100_a__Donauhaenge__NA" &
+            code_layer == "M13" ~ 538,
+          plot_code_simple == "LWF__57_a__Groppenhofer und Rieder Leite__NA" &
+            code_layer == "M01" ~ 574,
+          plot_code_simple == "LWF__65_a__Friedergries__NA" &
+            code_layer == "M13" ~ 599,
+          institute_sampling == "BFNP" & code_layer %in% c("OL", "OFH") ~
+            dist - 2 * 13,
+          institute_sampling == "BGD-NP" & code_layer %in% c("OL", "OFH") ~
+            dist - mass_bag_field,
+          TRUE ~ dist)
+      ) %>%
+      select(-any_of(c("mass_bag_field")))
 
   } # End of "if apply_corrections"
 
@@ -2146,6 +2418,7 @@ app_data_long <- function(app_data_wide,
 
   df_layers_all <- df_layers_all %>%
     # Filter out forest floor layers that were absent (not collected)
+    # e.g., WSL__36__Steibruchhau__NA
     filter(!(code_layer %in% c("OL", "OFH") &
               dist_check == "Sample not collected")) %>%
     # Add a column "layer_number":
@@ -2230,12 +2503,61 @@ app_data_long <- function(app_data_wide,
              thickness, thickness_min, thickness_max,
              depth_bedrock, depth_bedrock_min, depth_bedrock_max,
              depth_bedrock_compiled, depth_bedrock_cens_compiled,
-             .after = code_layer) %>%
+             .after = code_layer)
+
+
+
+
+
+  if (apply_corrections) {
+
+    # "WSL__25__Seeliwald__NA":
+    # Histosol with a peat layer of 45 cm thick
+    # 0-cm line was supposed to be on top of this peat layer, but
+    # the partner considered it below the 45-cm layer during sampling,
+    # i.e., they interpreted the top 20 cm as OL (in reality HF (fibric)),
+    # and the 25 cm below this so-called OL as OFH (in reality HM (mesic) and
+    # HS (sapric)).
+
+    # Solution:
+    # For now, do not replace code_layer (as this may give problems with
+    # joining of other datasets, e.g., lab data), but correct the depths
+    # of the layers.
+    # In other words, from now onwards, layer depths do no longer follow the
+    # theoretical depths!! (e.g., "M01" from 45 to 55 cm instead of 0 to 10 cm)
+    # Use depths rather than code_layer to identify below-ground layers from
+    # now onwards...
+
+    # TO DO: Adjust bedrock depth
+
+    df_layers_all <- df_layers_all %>%
+      mutate(
+        depth_top = case_when(
+          plot_code_simple == "WSL__25__Seeliwald__NA" ~ depth_top + 45,
+          TRUE ~ depth_top
+        ),
+        depth_bottom = case_when(
+          plot_code_simple == "WSL__25__Seeliwald__NA" ~ depth_bottom + 45,
+          TRUE ~ depth_bottom
+        ),
+        # TO DO: adjust based on final bedrock!!!
+        depth_bottom_bedrock = case_when(
+          plot_code_simple == "WSL__25__Seeliwald__NA" ~ depth_bottom,
+          TRUE ~ depth_bottom_bedrock
+        )
+      )
+
+  } # End of "if apply_corrections"
+
+
+
+
+
+  df_layers_all <- df_layers_all %>%
     mutate(
-      # Add a column "P1_coaf_method" that explains how the values in
-      # P1_coaf_2mm and P1_coaf_50mm were determined
-      # (whether they are direct observations or they can be interpreted
-      #  as "NA" because below the depth reached in P1)
+      # Add a column "P1_depth_reached" with the depth that was probably
+      # reached in P1 (in order to see whether the reported vol% coarse
+      # fragments was probably directly observed or estimated by the partner)
       P1_depth_reached =
         # Depth reached in P1
         case_when(
@@ -2249,6 +2571,10 @@ app_data_long <- function(app_data_wide,
             "LWF__65_a__Friedergries__NA") ~ depth_reached,
           plot_code_simple == "VUK__36__Hadecka planinka__NA" ~ 30,
           TRUE ~ as.numeric(sub(",.*", "", depth_bedrock_cens_compiled))),
+      # Add a column "P1_coaf_method" that explains how the values in
+      # P1_coaf_2mm and P1_coaf_50mm were determined
+      # (whether they are direct observations or they can be interpreted
+      #  as "NA" because below the depth reached in P1)
       P1_coaf_method = case_when(
         grepl("^M", code_layer) &
           (P1_depth_reached > depth_top) ~ "Direct observation",
@@ -2518,8 +2844,8 @@ app_data_long <- function(app_data_wide,
 
   ### INCONSISTENCY 8 ----
 
-  rule <- paste0("Subsample forest floor for lab cannot weigh more than sum of",
-                 "all reported forest floor masses across sampling points")
+  rule <- paste0("Subsample(s) forest floor for lab cannot weigh more than sum",
+                 " of all reported forest floor masses across sampling points")
   rule_id <- "8"
 
 
@@ -2528,8 +2854,15 @@ app_data_long <- function(app_data_wide,
 
   recs_problem <- df_layers_all %>%
     filter(code_layer %in% c("OL", "OFH")) %>%
-    mutate(rel_mass_subsample = (dist / tamass)) %>%
-    relocate(rel_mass_subsample, .after = dist) %>%
+    # Records for which we ignored a sampling point are not reliable
+    filter(!(grepl("NA", tamass_compiled) &
+               !grepl(",NA,NA,NA,NA", tamass_compiled))) %>%
+    mutate(
+      mass_samples = rowSums(
+        across(c(dist, edna1, edna2)),
+        na.rm = TRUE),
+      rel_mass_subsample = (mass_samples / tamass)) %>%
+    relocate(rel_mass_subsample, mass_samples, edna1, edna2, .after = dist) %>%
     filter(!is.na(dist) & !is.na(tamass) &
              # Let's allow a little bit of difference
              # due to weighing uncertainty, i.e. > 1.X instead of > 1
@@ -2542,12 +2875,17 @@ app_data_long <- function(app_data_wide,
         paste0(rule,
                " [", tamass_compiled, " g]"),
       tamass = as.character(round(tamass)),
-      dist = as.character(dist)) %>%
+      dist = as.character(dist),
+      edna1 = as.character(edna1),
+      edna2 = as.character(edna2)) %>%
     # pivot longer to get one row per parameter
     pivot_longer(
-      cols = c(dist, tamass),
+      cols = c(dist, tamass, edna1, edna2),
       names_to = "parameter",
       values_to = "value"
+    ) %>%
+    filter(
+      !(code_layer == "OL" & grepl("edna", parameter))
     ) %>%
     mutate(
       parameter = case_when(
@@ -2738,11 +3076,9 @@ df_plot <- df_plot %>%
     left_join(df_bedrock %>%
                 select(code,
                        depth_bedrock, depth_bedrock_min, depth_bedrock_max,
+                       depth_bedrock_compiled, depth_bedrock_cens_compiled,
                        depth_reached),
               by = "code")
-
-
-
 
 
 
@@ -2974,9 +3310,43 @@ df_sampling_points <-
 
 out <- list(
   # Layer-specific data
-  df_layers = df_layers_all,
+  df_layers = df_layers_all %>%
+    rename_with(~ str_replace_all(., "No_point", "no_point")) %>%
+    select(-any_of(c("code")), -ends_with("depth_reached"),
+           -ends_with("_harmonized"), -starts_with("depth_bedrock"),
+           -ends_with("_sampleID")) %>%
+    select(
+      globalid, wp, institute_sampling, site_type, plot_code_simple,
+      layer_number, code_layer, depth_top, depth_bottom, depth_bottom_bedrock,
+      starts_with("thickness"),
+      dist, starts_with("tamass"), surface_frame, count_ff_frames,
+      starts_with("P1_coaf_"),
+      bulk_den, vol_ring, count_rings, undist_sampling_points,
+      properties, properties_five_pts,
+      remarks_sample_dist,
+      edna1, edna2, back_up,
+      ends_with("_check"), everything()
+    ),
   # Plot-specific data
-  df_plot = df_plot,
+  df_plot = df_plot %>%
+    select(-starts_with("code_wrb_"), -ends_with("_survey"),
+           -any_of(c("moisture", "scheme", "num_photo_humus",
+                     "management_type", "code",
+                     "coordinates", "survey_year"))) %>%
+    select(
+      globalid, wp, ends_with("harmonized"), institute_sampling,
+      site_type, composed_site_id, plot_code, plot_code_simple,
+      latitude_dec, longitude_dec, hor_accuracy,
+      survey_date, survey_month,
+      air_temperature, actual_weather, past_weather, soil_condition, soil_dist,
+      macrorelief, slope_type, slope_deg,
+      starts_with("depth_"),
+      humus_form,
+      wrb_ref_soil_group, wrb_qualifier_1,
+      gen_observtn, other_remarks, other_observtn, P1_other_remarks_fragment,
+      remarks_bulk_den_sample,
+      everything()
+      ),
   # Sampling point-specific data
   df_sampling_points = df_sampling_points
 )
