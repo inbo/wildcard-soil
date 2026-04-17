@@ -71,7 +71,8 @@ show_app_data_per_plot <- function(plot_code_simple = NULL,
 
   ind <- which(plot_code_simple == his$plot_code_simple)
 
-  if (identical(ind, integer(0))) {
+  if (identical(ind, integer(0)) &&
+      !is.null(plot_code_simple)) {
 
     ind <- which(grepl(plot_code_simple, his$plot_code_simple,
                        ignore.case = TRUE))
@@ -106,7 +107,7 @@ show_app_data_per_plot <- function(plot_code_simple = NULL,
     # only check the plots in the vector (regardless of 'continue_loop_plots')
 
     if (!is.null(plot_code_simple) &&
-        length(plot_code_simple) > 1 &
+        length(plot_code_simple) > 1 &&
         !(plot_code_simple_i %in% plot_code_simple)) {
       next
     }
@@ -156,7 +157,12 @@ show_app_data_per_plot <- function(plot_code_simple = NULL,
                              "in the Global Environment. Please run functions ",
                              "'get_app_data()' and 'app_data_long()'."))
 
-    df_layers_i <- get("df_layers", envir = globalenv()) %>%
+    assert_that(exists("df_local_lab", envir = globalenv()),
+                msg = paste0("Dataframe 'df_local_lab' was not found ",
+                             "in the Global Environment. Please run function ",
+                             "'get_data_local_lab()'."))
+
+    df_layers_i <- get("df_layers_out", envir = globalenv()) %>%
       filter(plot_code_simple == plot_code_simple_i)
 
     df_plot_i <- get("df_plot", envir = globalenv()) %>%
@@ -165,9 +171,16 @@ show_app_data_per_plot <- function(plot_code_simple = NULL,
     df_sampling_points_i <- get("df_sampling_points", envir = globalenv()) %>%
       filter(plot_code_simple == plot_code_simple_i)
 
+    df_local_lab_i <- get("df_local_lab", envir = globalenv()) %>%
+      filter(plot_code_simple == plot_code_simple_i)
+
     cat(paste0("Site type:           ", df_plot_i$site_type, "\n"))
     cat(paste0("WRB Ref Soil Group:  ", df_plot_i$wrb_ref_soil_group, "\n"))
     cat(paste0("Humus form:          ", df_plot_i$humus_form, "\n\n"))
+
+    cat(paste0("Actual weather:      ", df_plot_i$actual_weather, "\n"))
+    cat(paste0("Past weather:        ", df_plot_i$past_weather, "\n"))
+    cat(paste0("Soil condition:      ", df_plot_i$soil_condition, "\n\n"))
 
     cat(paste0("General remarks:\n-", df_plot_i$other_remarks, "\n-",
                df_plot_i$other_observtn, "\n\n"))
@@ -177,7 +190,132 @@ show_app_data_per_plot <- function(plot_code_simple = NULL,
 
     if (compartment %in% c("all", "aboveground")) {
 
-      # TO DO: elaborate for forest floor
+      # Frame: surface area and number
+
+      cat("\nSAMPLING FRAME DETAILS\n")
+
+      cat("\nSurface area forest floor sampling frame (m²):   ")
+
+      df_layers_i %>%
+        filter(!is.na(surface_frame)) %>%
+        distinct(surface_frame) %>%
+        pull(surface_frame) %>%
+        cat(sep = "\n")
+
+      cat("\nNumber of forest floor sampling frames sampled:  ")
+
+      df_layers_i %>%
+        filter(!is.na(surface_frame)) %>%
+        distinct(count_ff_frames) %>%
+        pull(count_ff_frames) %>%
+        cat(sep = "\n")
+
+
+      # Thickness, mass and density (moist)
+
+      cat("\n\nTHICKNESS AND MASS PER SAMPLING POINT\n\n")
+
+      ol_dens_plaus <- c(0.01, 523.01)
+      ofh_dens_plaus <- c(0.03, 966.63)
+
+      df_sampling_points_i %>%
+        left_join(
+          df_layers_i %>%
+            distinct(plot_code_simple, .keep_all = TRUE) %>%
+            select(plot_code_simple, surface_frame),
+          by = "plot_code_simple") %>%
+        mutate(
+          ol_density = # kg m-3 (moist)
+            round(
+              ol_tamass * 1E-3 / # kg field-moist material over sampling frame
+                (surface_frame * ol_thickness * 1E-2), 2), # m3 volume
+          flag = if_else(
+            (ol_density < ol_dens_plaus[1] |
+               ol_density > ol_dens_plaus[2]),
+            "implaus",
+            NA)) %>%
+        rename(remarks = remarks_fofloor_sample) %>%
+        filter(
+          !(p_id %in% paste0("P", 6:9) &
+              all(is.na(ol_tamass[p_id %in% paste0("P", 6:9)])))
+        ) %>%
+        select(
+          p_id, ol_tamass, ol_thickness, ol_density, flag, remarks) %>%
+        print(n = Inf)
+
+      cat("\n")
+
+      df_sampling_points_i %>%
+        left_join(
+          df_layers_i %>%
+            distinct(plot_code_simple, .keep_all = TRUE) %>%
+            select(plot_code_simple, surface_frame),
+          by = "plot_code_simple") %>%
+        mutate(
+          ofh_density = # kg m-3 (moist)
+            round(
+              ofh_tamass * 1E-3 / # kg field-moist material over sampling frame
+                (surface_frame * ofh_thickness * 1E-2), 2), # m3 volume
+          flag = if_else(
+            (ofh_density < ofh_dens_plaus[1] |
+               ofh_density > ofh_dens_plaus[2]),
+            "implaus",
+            NA)) %>%
+        rename(remarks = remarks_fofloor_sample) %>%
+        filter(
+          !(p_id %in% paste0("P", 6:9) &
+              all(is.na(ofh_tamass[p_id %in% paste0("P", 6:9)])))
+        ) %>%
+        select(
+          p_id, ofh_tamass, ofh_thickness, ofh_density, flag, remarks) %>%
+        print(n = Inf)
+
+
+      # Masses field and after drying (local)
+
+      cat("\n\nFINAL SAMPLES\n\n")
+
+
+      df_layers_i %>%
+        filter(!grepl("^M", code_layer)) %>%
+        mutate(line = paste0(tolower(code_layer), "_remarks_dist: ",
+                             remarks_sample_dist)) %>%
+        pull(line) %>%
+        cat(sep = "\n")
+
+      cat("\n")
+
+      df_layers_i %>%
+        filter(!grepl("^M", code_layer)) %>%
+        select(
+          code_layer,
+          dist, dist_check, edna1, edna1_check, edna2, edna2_check) %>%
+        print(n = Inf)
+
+      cat("\n")
+
+      df_layers_i %>%
+        filter(!grepl("^M", code_layer)) %>%
+        full_join(
+          # Part 1 other partners: forest floor data local lab
+          df_local_lab_i %>%
+            mutate(
+              mass_dry_partner =
+                rowSums(across(starts_with("mass_dry_")), na.rm = TRUE)) %>%
+            select(plot_code_simple, code_layer, sample_id_simple,
+                   mass_dry_partner,
+                   mass_dry_leaves_ol,
+                   mass_dry_twigs_medium_ol,
+                   mass_dry_twigs_small_ol) %>%
+            rename_with(~ gsub("_ol", "", .x)),
+          by = join_by("plot_code_simple", "code_layer")
+        ) %>%
+        select(
+          code_layer, thickness, tamass, dist, mass_dry_partner,
+          starts_with("mass_dry_")) %>%
+        mutate(
+          dry_to_moist = round(1E2 * mass_dry_partner / dist)) %>%
+        print(n = Inf)
 
 
     } # End of "aboveground"
@@ -206,8 +344,8 @@ show_app_data_per_plot <- function(plot_code_simple = NULL,
 
       cat("\n\nBEDROCK DEPTHS\n\n")
 
-      df_layers_i[1, ] %>%
-        select(-"depth_bedrock_compiled") %>%
+      df_plot_i[1, ] %>%
+        select(-contains("_compiled")) %>%
         select(contains("depth_bedrock")) %>%
         pivot_longer(everything(),
                      names_to = "name",
@@ -217,7 +355,7 @@ show_app_data_per_plot <- function(plot_code_simple = NULL,
         cat(sep = "\n")
 
       cat(paste0("Bedrock depths: ",
-                 df_layers_i$depth_bedrock_compiled[1], "\n"))
+                 df_plot_i$depth_bedrock_compiled[1], "\n"))
 
 
       ## Remarks disturbed samples/properties ----
@@ -256,8 +394,7 @@ show_app_data_per_plot <- function(plot_code_simple = NULL,
       df_layers_i %>%
         select(code_layer, bulk_den, count_rings,
                undist_sampling_points, vol_ring,
-               P1_num_M36_undist_samples,
-               P1_num_M61_undist_samples) %>%
+               contains("_undist_samples")) %>%
         filter(grepl("^M", code_layer)) %>%
         rename_with(~ gsub("_samples", "", .x)) %>%
         mutate(
