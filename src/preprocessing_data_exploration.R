@@ -669,32 +669,6 @@ for (partner_i in unique(df_layers_undist_check$institute_sampling)) {
 
 
 
-# Add flags
-
-undist_add %>%
-  mutate(
-    d2mf_flag = case_when(
-      dry_to_moist_field < 0.4 |
-        dry_to_moist_field > 1 ~ "implaus"),
-    b2mf_flag = case_when(
-      before_to_moist_field < 0.4 |
-        before_to_moist_field > 1.02 ~ "implaus"),
-    d2ml_flag = case_when(
-      (mass_lab_type == "total" & dry_to_moist_lab < 0.8) |
-        dry_to_moist_lab < 0.6 |
-        dry_to_moist_lab > 1.01 ~ "implaus"),
-    bd_flag = case_when(
-      # Less strict flag
-      bulk_den_estimate < 480 |
-        bulk_den_estimate > 1700 ~ "implaus"),
-    bd_field_flag = case_when(
-      bd_field < 700 |
-        bd_field > 2000 ~ "implaus")) %>%
-  View
-
-
-
-
 
 
 
@@ -1614,19 +1588,6 @@ ggsave(filename = paste0("mass_after_to_dist",
        plot = p,
        path = paste0("./output/data_quality/forest_floor/"),
        dpi = 500)
-
-
-df_ff_check2 %>%
-  filter(code_layer == "OFH") %>%
-  mutate(
-    b2dp_flag = (!is.na(mass_dry_partner) &
-                   (before_to_dry_partner < before_to_dry_partner_plaus[1] |
-                      before_to_dry_partner > before_to_dry_partner_plaus[2])),
-    a2b_flag = (!institute_sampling %in% c("BFNP", "UNIUD", "INBO") &
-                  (after_to_before < after_to_before_plaus[1] |
-                     after_to_before > after_to_before_plaus[2]))
-  ) %>%
-  filter(wp == "WP2" & code_layer == "OFH" & (b2dp_flag) & (!a2b_flag)) %>% View
 
 
 
