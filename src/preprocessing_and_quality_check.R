@@ -11,7 +11,6 @@
 # using Ctrl + Shift + O
 
 
-
 # 1. Prepare packages ----
 
 # Define required packages
@@ -24,7 +23,16 @@ stopifnot(require("tidyverse"),
           require("assertthat"),
           require("inbolims"),
           require("ggpmisc"),
-          require("patchwork"))
+          require("patchwork"),
+          require("plotly"),
+          require("purrr"),
+          require("brms"),
+          require("cmdstanr"),
+          require("tidybayes"),
+          require("here"),
+          require("sf"),
+          require("terra"),
+          require("stars"))
 
 # Source URLs of sensitive Google Drive links
 source("./data/sensitive_metadata/google_drive_links.R")
@@ -37,6 +45,11 @@ source("./data/sensitive_metadata/google_drive_links.R")
 # In theory, it should be possible to left_join everything using either
 # plot_code_simple (for plot-specific data) or plot_code_simple and code_layer
 # (for layer-specific data)
+
+## · Initial script settings
+
+apply_corrections <- TRUE
+
 
 ## · Site metadata ----
 
@@ -73,7 +86,9 @@ if (!exists("wp3_sites", envir = globalenv())) {
 # Data Survey123 app wide format
 
 source("./src/functions/get_app_data.R")
-app_data_wide <- get_app_data()
+res_get_app_data <- get_app_data()
+
+app_data_wide <- res_get_app_data$app_data_wide
 
 # Convert data Survey123 app to long format
 
@@ -81,10 +96,11 @@ app_data_wide <- get_app_data()
 # inconsistencies
 
 source("./src/functions/app_data_long.R")
-df_layers <- app_data_long(app_data_wide)
+res_app_data_long <- app_data_long(app_data_wide = app_data_wide)
 
-# df_plot and inconsistencies will be in the Global Environment
-
+df_layers_out <- res_app_data_long$df_layers
+df_plot <- res_app_data_long$df_plot
+df_sampling_points <- res_app_data_long$df_sampling_points
 
 
 
@@ -141,6 +157,8 @@ if (nrow(data_lab) > 0) {
 # RF (V-25V006-04), while the new (better) sample is named
 # "DE__LWF__65_a__NA__NA__OFH_carbon_b" → better to proceed with these results
 
+# VUK__1__Zofin__b OFH and VUK__1__Zofin__c OFH are switched at central lab
+# INBO! (note: forest floor masses already adjusted in section 3.2)
 
 
 
@@ -182,7 +200,7 @@ source("./src/functions/add_ids_simple.R")
 
 # 3. Combine masses for disturbed samples (forest floor) ----
 
-code_layer_levels <- c("OL", "OFH", "M01", "M13", "M36", "M61")
+layers <- c("OL", "OFH", "M01", "M13", "M36", "M61")
 
 
 ## 3.1. Data pretreatment disturbed ----
@@ -190,8 +208,9 @@ code_layer_levels <- c("OL", "OFH", "M01", "M13", "M36", "M61")
 glimpse(dist)
 
 columns_to_check <- c("mass_recipient",
-                      "mass_before",
-                      "mass_after")
+                      "mass_before_gross",
+                      "mass_after_gross",
+                      "mass_objects")
 
 source("./src/functions/safe_numeric_convert.R")
 source("./src/functions/add_ids_simple.R")
@@ -200,13 +219,17 @@ dist_harm <- dist %>%
   rename(sample_id = `sample_id (unieke veldcode uit Survey123 app)`,
          survey_date = `Datum bemonstering`,
          mass_recipient = `Massa (g) recipiënt zonder deksel`,
-         mass_before =
+         mass_before_gross =
            `Massa (g) monster voor (inclusief recipiënt zonder deksel)`,
-         mass_after =
-           `Massa monster (g) na (inclusief recipiënt zonder deksel)`) %>%
+         mass_after_gross =
+           `Massa monster (g) na (inclusief recipiënt zonder deksel)`,
+         mass_objects =
+           `Massa object verwijderd voor drogen (netto, g)`,
+         remarks_pretrt = ...32) %>%
   # Remove records from 2024 test
   filter(!grepl("^WILDCARD2024_", sample_id)) %>%
-  select(sample_id, mass_recipient, mass_before, mass_after) %>%
+  select(sample_id, any_of(columns_to_check),
+         remarks_pretrt) %>%
   # Add sample_id_sample, plot_code_simple, institute_sampling,
   # sample_code, code_layer
   add_ids_simple() %>%
@@ -214,20 +237,34 @@ dist_harm <- dist %>%
                 ~ safe_numeric_convert(.x, cur_column())))
 
 assertthat::assert_that(
-  all(is.na(dist_harm$mass_before) | !is.na(dist_harm$mass_recipient)),
+  all(is.na(dist_harm$mass_before_gross) | !is.na(dist_harm$mass_recipient)),
   msg = "mass_recipient must not be NA when mass_before is not NA.")
 
 assertthat::assert_that(
-  all(is.na(dist_harm$mass_after) | !is.na(dist_harm$mass_recipient)),
+  all(is.na(dist_harm$mass_after_gross) | !is.na(dist_harm$mass_recipient)),
   msg = "mass_recipient must not be NA when mass_after is not NA.")
 
 dist_harm <- dist_harm %>%
   # Calculate net mass
   mutate(
-    mass_before_net = mass_before - mass_recipient,
-    mass_after_net = mass_after - mass_recipient)
+    mass_before =
+      # Add any objects that were removed before first weighing and drying
+      # of sample pretreatment central lab. This way, any objects that do not
+      # belong in OFH are included in the mass ratio after versus before
+      # drying.
+      mass_before_gross + coalesce(mass_objects, 0) - mass_recipient,
+    mass_after = mass_after_gross - mass_recipient)
 
 glimpse(dist_harm)
+
+
+
+
+
+
+
+
+
 
 
 ## 3.2. Combine all masses for disturbed layers per layer ----
@@ -250,10 +287,26 @@ dist_masses <-
     # Part 2 other partners: from central lab sample pretreatment (dist)
     dist_harm %>%
       filter(institute_sampling != "INBO") %>%
-      mutate(mass_after = mass_after_net,
-             mass_before = mass_before_net) %>%
       select(plot_code_simple, sample_id_simple,
              code_layer, mass_before, mass_after) %>%
+      # ---
+      # Mistakes: switched samples at central lab (pretreatment disturbed)
+      # ---
+      mutate(
+        plot_code_simple = case_when(
+          sample_id_simple == "VUK__1__b__OFH_carbon" ~
+            "VUK__1__Zofin__c",
+          sample_id_simple == "VUK__1__c__OFH_carbon" ~
+            "VUK__1__Zofin__b",
+          TRUE ~ plot_code_simple
+          ),
+        sample_id_simple = case_when(
+          code_layer == "OFH" & plot_code_simple == "VUK__1__Zofin__b" ~
+            "VUK__1__b__OFH_carbon",
+          code_layer == "OFH" & plot_code_simple == "VUK__1__Zofin__c" ~
+            "VUK__1__c__OFH_carbon",
+          TRUE ~ sample_id_simple
+        )) %>%
       mutate(
         mass_dry_leaves = NA_real_,
         mass_dry_twigs_medium = NA_real_,
@@ -262,11 +315,14 @@ dist_masses <-
     dist_harm %>%
       # Part 1 INBO: Create OL subtotals
       filter(code_layer == "OL") %>%
+      mutate(
+        sample_id_simple = gsub("_OL_.*$", "_OL_flammability",
+                                sample_id_simple)) %>%
       select(plot_code_simple, sample_id_simple,
-             sample_code, mass_after_net) %>%
+             sample_code, mass_after) %>%
       pivot_wider(
         names_from = sample_code,
-        values_from = mass_after_net,
+        values_from = mass_after,
         names_prefix = "mass_dry_"
       ) %>%
       mutate(
@@ -284,8 +340,8 @@ dist_masses <-
           group_by(plot_code_simple) %>%
           reframe(
             mass_before = ifelse(
-              any(!is.na(mass_before_net)),
-              sum(mass_before_net, na.rm = TRUE),
+              any(!is.na(mass_before)),
+              sum(mass_before, na.rm = TRUE),
               NA_real_)),
         by = "plot_code_simple") %>%
       select(plot_code_simple, sample_id_simple,
@@ -298,8 +354,6 @@ dist_masses <-
           filter(institute_sampling == "INBO") %>%
           filter(code_layer != "OL") %>%
           filter(!grepl("BackUp", sample_id)) %>%
-          mutate(mass_after = mass_after_net,
-                 mass_before = mass_before_net) %>%
           select(plot_code_simple, sample_id_simple,
                  code_layer, mass_before, mass_after) %>%
           mutate(
@@ -319,7 +373,7 @@ dist_masses <-
     by = join_by("plot_code_simple", "code_layer", "sample_id_simple")
   ) %>%
   mutate(code_layer = factor(code_layer,
-                             levels = code_layer_levels)) %>%
+                             levels = layers)) %>%
   # Arrange by plot and layer
   arrange(plot_code_simple, code_layer) %>%
   relocate(mass_dry_partner, .before = mass_before) %>%
@@ -341,17 +395,13 @@ dist_masses <-
       round(1E2 * mass_dry_twigs_small / mass_dry_partner, 1)
     ) %>%
   select(-mass_dry_leaves_ol, -mass_dry_twigs_medium_ol,
-         -mass_dry_twigs_small_ol) %>%
-  # We actually don't need those masses also. Maybe better to report the
-  # relative percentages.
-  select(-mass_dry_leaves, -mass_dry_twigs_medium, -mass_dry_twigs_small)
+         -mass_dry_twigs_small_ol)
 
 
-View(dist_masses)
 
 # Combine with df_layers (layer-specific data Survey123 app)
 
-df_layers <- df_layers %>%
+df_layers <- df_layers_out %>%
   left_join(dist_masses %>%
               # We need to use the masses of the original sample
               # because we do not have the mass across five sampling points
@@ -364,18 +414,10 @@ df_layers <- df_layers %>%
   relocate(mass_dry_partner, mass_before, mass_after,
            .after = dist) %>%
   mutate(code_layer = factor(code_layer,
-                             levels = code_layer_levels)) %>%
-  arrange(institute_sampling, plot_code_simple, code_layer)
+                             levels = layers)) %>%
+  arrange(institute_sampling, plot_code_simple, layer_number)
 
-# Check if you do not see any weird things in the masses of the forest floor
-# (especially OFH):
 
-df_layers %>%
-  select(wp, institute_sampling,
-         plot_code_simple, code_layer, thickness, tamass, dist,
-         mass_dry_partner, mass_before, mass_after, tamass_compiled) %>%
-  filter(code_layer %in% c("OL", "OFH")) %>%
-  View
 
 
 ## 3.3. Calculate areal_mass (dry) for forest floor (t ha-1) ----
@@ -393,22 +435,28 @@ df_layers %>%
 
 # In theory (partner samples), we should proceed as follows:
 # - First calculate the moisture content based on:
-#   mass_dry_partner and dist
+#   mass_dry_partner versus dist, and mass_after versus mass_before
 # - Calculate dry areal mass based on tamass, surface_frame, count_ff_frames
 #   and the moisture content
 
-# However, there seem to be a lot of exceptions (typically different from
+# However, there seem to be some exceptions (typically different from
 # partner to partner):
-# - In general, it seems so far that most of the samples are not yet dry
-#   when they arrive at the central lab. This was visible for the UNIUD
-#   samples upon arrival. On the other hand, it seems unexpected that the
-#   mass at the central lab would still decrease by more than 20-30 %,
-#   so maybe something went wrong with mass_after for some OFH samples
-#   → maybe reweigh those... If mass_before is quite in line with
-#   mass_dry_partner, mass_before and mass_dry_partner are probably fine.
-# - BFNP: they only provided local lab masses for OL, not OFH. Maybe ask
-#   them if they have OFH masses after drying, and for how long they dried
-#   the samples, because some lose a lot of weight in the central lab
+# - It seems so far that some of the samples are not yet dry when they
+#   arrive at the central lab. This was visible for the UNIUD and BFNP
+#   samples upon arrival. Also, during sample pretreatment at the central lab,
+#   we sometimes observed inconsistencies with the definition of OFH, sometimes
+#   not possible to solve (e.g., too much mineral matrix in OFH), and sometimes
+#   possible to solve, e.g., the presence of unwanted objects such as
+#   too big cones, coarse fragments etc. Those are removed in the central lab,
+#   and their mass is reflected in the ratio of mass_after to mass_before
+#   of the central lab. This ratio therefore reflects remaining
+#   soil moisture and unwanted objects. In the assumption that the
+#   concentration of these objects in the central lab subsample is
+#   representative for their concentration in the the complete OFH layer,
+#   we will include this ratio in the soil moisture ratio determined based
+#   on the local lab masses.
+# - BFNP: they only provided local lab masses for OL, not OFH. They forgot to
+#   record OFH masses after drying. Some lose a lot of weight in the central lab
 #   (e.g., Hoellbachgespreng). mass_before seems in line with dist, but
 #   mass_after is sometimes surprisingly low. OL masses seem plausible.
 # - UNIUD: they seem to have switched the sequence: they probably took the
@@ -419,79 +467,286 @@ df_layers %>%
 #   Cansiglio and Val Alba were indeed clearly moist upon arrival in the
 #   central lab. The moisture content needs to be a combination of
 #   mass_dry_partner versus tamass and mass_after versus mass_before
-# - INBO: obviously no "mass_dry_partner". "mass_before" should therefore
-#   be similar to "dist". There must be some typos (either app or WBL),
-#   e.g. Bos Terrijst.
+# - WR: values reported under "dist" for OL look implausible
+#   (with mass_dry_partner higher than dist and plausible in comparison with
+#   tamass). Probably, the full sample (tamass) was taken to the local lab
+#   for drying.
+# - INBO: no "mass_dry_partner". "mass_before" should therefore
+#   be similar to "dist". There must be some typos, e.g., Bos Terrijst.
+
+
+
+if (apply_corrections) {
+
+  df_layers <- df_layers %>%
+    mutate(
+      # Corrections for UNIUD samples
+      dist_orig = dist,
+      mass_dry_partner_orig = mass_dry_partner,
+      mass_dry_partner = case_when(
+        # UNIUD:
+        # Mass of dried subsample local lab is probably submitted under "dist"
+        institute_sampling == "UNIUD" ~ dist_orig,
+        TRUE ~ mass_dry_partner),
+      dist = case_when(
+        # UNIUD:
+        # Multiply moist-to-dry ratio with the mass of the dried subsample
+        # from the local lab in order to obtain what should have been "dist"
+        # (mass of field-moist subsample)
+        # In other words: what is now reported as:
+        # dist * (tamass / mass_dry_partner)
+        institute_sampling == "UNIUD" ~
+          round(dist_orig * (tamass / mass_dry_partner_orig), 2),
+        # WR:
+        # dist seems incorrect for OL layers, and it seems like they
+        # must have taken the full OL sample to the local lab based on the data
+        institute_sampling == "WR" & code_layer == "OL" ~
+          tamass,
+        TRUE ~ dist)
+    ) %>%
+    select(-dist_orig, -mass_dry_partner_orig)
+
+
+  before_to_dry_partner_plaus <- c(0.9, 1.1)
+  after_to_before_plaus <- c(0.8, 1.01)
+
+  df_layers <- df_layers %>%
+    # Solve inconsistencies in forest floor masses
+    mutate(
+      mass_before = case_when(
+        # Must have been a typo based on the field forms
+        # (Original: 666.44)
+        plot_code_simple == "INBO__11__Bos Terrijst__NA" &
+          code_layer == "OFH" ~ 566.44,
+        TRUE ~ mass_before
+      ),
+      mass_dry_partner = case_when(
+        # Probably a typo by the partner (originally 720.9),
+        plot_code_simple == "VUK__38__Novorecky mocal__NA" &
+          code_layer == "OFH" ~ 72.09,
+        TRUE ~ mass_dry_partner)
+    ) %>%
+    mutate(
+      before_to_dry_partner = case_when(
+        institute_sampling == "INBO" ~ mass_before / dist,
+        TRUE ~ mass_before / mass_dry_partner),
+      after_to_before = mass_after / mass_before,
+      # Is ratio of mass_before (central lab) to mass_dry_partner (local lab)
+      # plausible? (should be ~ 1)
+      # Note that mass_dry_partner is missing for INBO and BFNP
+      b2dp_flag = ((!is.na(mass_dry_partner) | institute_sampling == "INBO") &
+                     code_layer == "OFH" &
+                     (before_to_dry_partner < before_to_dry_partner_plaus[1] |
+                        before_to_dry_partner >
+                        before_to_dry_partner_plaus[2])),
+      # Is ratio of mass_after to mass_before (central lab) plausible?
+      # (Except for BFNP, UNIUD and INBO, for which mass_before was not
+      #  (entirely) dry, this should be close to 1)
+      a2b_flag = (!institute_sampling %in% c("BFNP", "UNIUD", "INBO") &
+                    code_layer == "OFH" &
+                    (after_to_before < after_to_before_plaus[1] |
+                       after_to_before > after_to_before_plaus[2])),
+      # Scenario 1:
+      # if mass_before is quite different from both mass_dry_partner and
+      # mass_after, assume that there is a mistake (e.g., typo) in mass_before
+      # Action: replace by NA
+      # This is the case for
+      #  "WULS__1__Bialowieza National Park__NA__Transect IV",
+      #  "FVA-BW__15__Waldmoor-Torfstich__1125", "VUK__1__Zofin__c"
+      #  "INBO__1__Zonienwoud-Joseph Zwaenepoel reservaat__1stExtension"
+      mass_before = ifelse(((institute_sampling == "INBO" & b2dp_flag) |
+                              (b2dp_flag & a2b_flag)),
+                           NA_real_,
+                           mass_before),
+      # Scenario 2:
+      # if mass_after is unexpectedly quite different from mass_before while
+      # mass_before is consistent with mass_dry_partner, assume that there
+      # is a mistake (e.g., typo) in mass_after
+      # Action: replace by NA
+      # This is the case for "FVA-BW__543__Schnepfenmoos__NA",
+      # "UNITBV__1__Nera__NA", "WR__9__Pijpebrandje__NA"
+      mass_after = ifelse((!b2dp_flag & a2b_flag), NA_real_, mass_after)
+      # Scenario 3:
+      # if mass_before is quite different from mass_dry partner but
+      # consistent with mass_after (i.e., b2dp_flag & !a2b_flag),
+      # assume that the moisture content of the central lab
+      # (dry_to_moist_central) is still realistic (manually verified).
+      # No need to take any action.
+      # This is the case for "NWFVA__03-011__Walbecker Warte__NA",
+      # "UL__8__Krokar__NA", "UL__9__Gorjanci__NA",
+      # "DISAFA - UNITO__9__Paneveggio__NA", "WSL__25__Seeliwald__NA"
+      # TO DO: potentially flag this with partners - especially if mass of
+      # sample in sample list upon shipment ("samples") was reported and
+      # points out that there is an issue in mass_dry_partner
+    ) %>%
+    select(-any_of(c(
+      "before_to_dry_partner", "after_to_before",
+      "b2dp_flag", "a2b_flag"
+    )))
+
+
+} # End of "if apply_corrections"
+
+
+
 
 
 df_layers <- df_layers %>%
   mutate(
-    # Dry mass fraction (dry mass relative to field-moist mass)
-    # This will be the easiest to work with
-    dry_to_moist = ifelse(
+    # Dry mass fraction local lab
+    # i.e., dry mass as determined in the local lab relative to field-moist mass
+    dry_to_moist_local = ifelse(
       code_layer %in% c("OL", "OFH"),
       case_when(
-        institute_sampling == "INBO" ~ mass_after / dist,
-        institute_sampling == "UNIUD" & code_layer == "OL" ~
-          # We have to trust the values they gave, although they probably
-          # did not dry it sufficiently long
-          mass_dry_partner / tamass,
-        institute_sampling == "UNIUD" & code_layer == "OFH" ~
-          # combination of mass_dry_partner versus tamass and
-          # mass_after versus mass_before
-          (mass_after / dist) * (mass_dry_partner / tamass),
-        institute_sampling == "BFNP" & code_layer == "OL" ~
-          mass_dry_partner / dist,
+        institute_sampling == "INBO" ~ pmin(mass_after / dist, 1),
         institute_sampling == "BFNP" & code_layer == "OFH" ~
           # No local lab mass reported
-          # In theory, we should work with mass_before here, but mass_after
-          # is probably better since probably not totally dry upon arrival
-          # based on the data
-          mass_after / dist,
-        # ADD OTHER EXCEPTIONS HERE
-        #
+          pmin(mass_before / dist, 1),
         # Partners with the "normal" sample flow
-        code_layer == "OL" ~
-          mass_dry_partner / dist,
-        code_layer == "OFH" ~
-          # In theory, we should work with mass_dry_partner too. However,
-          # if samples lose a lot of weight in the central lab, they were
-          # probably not entirely dry. On the other hand, this "extra drying"
-          # did not happen in OL.
-          mass_after / dist),
+        TRUE ~ pmin(mass_dry_partner / dist, 1)),
       NA_real_),
+    # Dry mass fraction central lab
+    # i.e., dry mass as determined in the central lab relative to the mass
+    # of the sample coming from the local lab (in theory dry, but often
+    # contains remaining moisture or unwanted objects such as stones, cones...
+    # which are hence reflected in this ratio)
+    # This is only available for OFH though
+    dry_to_moist_central = ifelse(
+      code_layer == "OFH",
+      case_when(
+        institute_sampling == "INBO" ~ 1,
+        # "RO__USV__1__NA__1__OFH_carbon": Part was spilled during
+        # oven-drying, so better to use dry_to_moist_local only
+        plot_code_simple == "USV__1__Vanatori Natural Park (core area)__NA" ~ 1,
+        is.na(mass_before) | is.na(mass_after) ~ NA_real_,
+        # Default:
+        # ratio of mass_after to mass_before
+        # Take minimum of mass_before and mass_dry_partner
+        # (should in theory be the same)
+        TRUE ~
+          pmin(mass_after / pmin(mass_before, mass_dry_partner, na.rm = TRUE),
+               1)),
+      NA_real_))
+
+# In order to gap-fill dry_to_moist_central
+# (for a few records where either mass_before or mass_after were implausible -
+# only for partners for which moisture contents at central lab were consistent
+# and negligible, and only for records for which no unwanted objects were
+# observed, i.e., different before and after drying only due to moisture)
+
+df_dry_to_moist_central <- df_layers %>%
+  filter(wp == "WP2") %>%
+  filter(code_layer == "OFH") %>%
+  filter(!institute_sampling %in% c("BFNP", "UNIUD", "INBO")) %>%
+  # Remove records with remarks reported during pretreatment central lab
+  # (often due to unwanted objects or other inconsistencies)
+  left_join(dist_harm %>%
+              select(plot_code_simple, code_layer, sample_id_simple,
+                     remarks_pretrt),
+            by = join_by("plot_code_simple", "code_layer",
+                         "sample_id_simple")) %>%
+  filter(is.na(remarks_pretrt)) %>%
+  group_by(wp, institute_sampling) %>%
+  reframe(
+    dry_to_moist_central_mean = ifelse(
+      any(!is.na(dry_to_moist_central)),
+      mean(dry_to_moist_central, na.rm = TRUE),
+      NA_real_),
+    dry_to_moist_central_min = ifelse(
+      any(!is.na(dry_to_moist_central)),
+      min(dry_to_moist_central, na.rm = TRUE),
+      NA_real_),
+    dry_to_moist_central_max = ifelse(
+      any(!is.na(dry_to_moist_central)),
+      max(dry_to_moist_central, na.rm = TRUE),
+      NA_real_),
+    diff = dry_to_moist_central_max - dry_to_moist_central_min)
+
+
+df_layers <- df_layers %>%
+  # Gap-fill moisture contents central lab
+  left_join(df_dry_to_moist_central %>%
+              select(wp, institute_sampling, dry_to_moist_central_mean),
+            by = join_by("wp", "institute_sampling")) %>%
+  mutate(
+    dry_to_moist_central = case_when(
+      code_layer == "OFH" ~ coalesce(dry_to_moist_central,
+                                     dry_to_moist_central_mean),
+      TRUE ~ dry_to_moist_central)
+  ) %>%
+  select(-any_of(c("dry_to_moist_central_mean"))) %>%
+  # Copy moisture contents central lab from OFH to OL per plot
+  group_by(plot_code_simple) %>%
+  mutate(
+    dry_to_moist_central = ifelse(
+      code_layer == "OL",
+      dry_to_moist_central[code_layer == "OFH"][1],
+      dry_to_moist_central)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    dry_to_moist = round(dry_to_moist_local * dry_to_moist_central , 3),
     # t ha-1
     areal_mass = ifelse(
       code_layer %in% c("OL", "OFH"),
+      round(
       tamass * 1E-6 * # tonnes field-moist material over x sampling frame areas
         dry_to_moist / # g dry material / g field-moist material
-        (surface_frame * count_ff_frames * 1E-4), # ha covered by all frames
+        (surface_frame * count_ff_frames * 1E-4), 2), # ha covered by all frames
       NA_real_),
     # We can also calculate the minimum and maximum, based on the variation
     # between sampling points
     areal_mass_min = ifelse(
       code_layer %in% c("OL", "OFH"),
-      tamass_min * 1E-6 * # This is for one sampling point (one frame)
+      round(
+        tamass_min * 1E-6 * # This is for one sampling point (one frame)
         dry_to_moist /
-        (surface_frame * 1E-4), # ha covered by one frames
+        (surface_frame * 1E-4), 2), # ha covered by one frames
       NA_real_),
     areal_mass_max = ifelse(
       code_layer %in% c("OL", "OFH"),
+      round(
       tamass_max * 1E-6 * # This is for one sampling point (one frame)
         dry_to_moist /
-        (surface_frame * 1E-4), # ha covered by one frames
-      NA_real_))
+        (surface_frame * 1E-4), 2), # ha covered by one frames
+      NA_real_),
+    # Add bulk_density based on areal mass (kg m-3)
+    # (for Seeliwald, where original so-called OL and OFH layers become
+    #  below-ground)
+    bulk_density_dist = ifelse(
+      !is.na(areal_mass),
+      round(
+        areal_mass * # t ha-1 = 1000 kg 10 000 m-2 (i.e., 1 t ha-1 = 0.1 kg m-2)
+          1E-1 /
+          (thickness * 1E-2), # thickness in cm to m
+        2),
+      NA_real_),
+    bulk_density_dist_min = ifelse(
+      !is.na(areal_mass_min),
+      round(
+        areal_mass_min * 1E-1 /
+          (thickness * 1E-2),
+        2),
+      NA_real_),
+    bulk_density_dist_max = ifelse(
+      !is.na(areal_mass_max),
+      round(
+        areal_mass_max * 1E-1 /
+          (thickness * 1E-2),
+        2),
+      NA_real_)
+    )
 
 
-# Check again
+df_layers_ff <- df_layers
 
-df_layers %>%
-  select(wp, institute_sampling,
-         plot_code_simple, code_layer, thickness, tamass, dist,
-         mass_dry_partner, mass_before, mass_after, tamass_compiled,
-         dry_to_moist, areal_mass, areal_mass_min, areal_mass_max) %>%
-  filter(code_layer %in% c("OL", "OFH")) %>%
-  View
+
+
+
+
+
+
+
 
 
 # 4. Combine undisturbed info for bulk density and coarse fragments ----
@@ -500,10 +755,15 @@ df_layers %>%
 
 glimpse(undist)
 
-columns_to_check <- c("mass_recipient",
-                      "mass_before",
-                      "mass_after",
-                      "mass_cf",
+columns_to_check <- c("mass_recipient_residu",
+                      "mass_recipient",
+                      "mass_before_gross",
+                      "mass_after_total_gross",
+                      "mass_after_fe_gross",
+                      "mass_cf_wet_siev_gross",
+                      "mass_cf_orig",
+                      "vol_cf_before",
+                      "vol_cf_after",
                       "mass_roots")
 
 source("./src/functions/safe_numeric_convert.R")
@@ -513,48 +773,337 @@ undist_harm <- undist %>%
   rename(
     sample_id = `sample_id (unieke veldcode uit Survey123 app)`,
     survey_date = `Datum bemonstering`,
-    mass_recipient = `Massa (g) recipiënt zonder deksel`,
-    mass_after =
-      `Massa fine earth (g) na (inclusief recipiënt zonder deksel)`,
-    mass_cf = `Massa steentjes (> 2 mm) (g) droog zonder recipiënt`,
+    # This column contains the gross mass of the original recipient from the
+    # field (ziploc bag) with any (moist) residu left after transferring
+    # its content to the oven recipient. The mass of the clean empty recipient
+    # (tare; ziploc bag) with sticker is 25.11 g for the Belgian samples.
+    # For the correction of the foreign samples, we will use an estimate based
+    # on the Belgian samples since we do not know the tare weight of the
+    # clean recipients of the partners.
+    mass_recipient_residu = `Massa ziploc met residu na legen (g) (tarra)`,
+    # This column contains the tare mass of the oven recipient (black container)
+    mass_recipient = `Massa (g) oven-recipiënt zonder deksel`,
+    # This column contains the gross mass of the full sample after drying
+    # (incl. coarse fragments). The column was added after it became clear
+    # that dry sieving is difficult. The mass of any coarse fragments or
+    # roots (determined after wet sieving) needs to be subtracted from its net
+    # value to obtain the dry mass of fine earth.
+    mass_after_total_gross =
+      `Massa (g) monster na drogen (inclusief recipiënt zonder deksel)`,
+    # This column contains the mass of coarse fragments (including recipient,
+    # i.e., gross) after wet sieving, recorded after 26 March 2026 evening.
+    # See details below (mass_cf).
+    mass_cf_wet_siev_gross =
+      `Massa steentjes (> 2 mm) (g) droog met recipiënt (na wet sieving)`,
+    # This column contains the net or gross mass of any dry coarse fragments
+    # Details: This column contains all coarse fragments masses determined
+    # before 26 March 2026 evening - either after dry sieving (old method)
+    # or wet sieving (new method). Usually the recorded mass is the net mass
+    # except when the column "is_mass_cf_gross" says "Ja". However, there
+    # are some samples for which part of the stones was previously
+    # separated, weighed (with weighed recorded in this column) and discarded,
+    # while the sample could not be properly sieved with only dry sieving
+    # and therefore still contains stones. For those samples, the remainder
+    # was again sieved using wet sieving, for which the mass is recorded
+    # in the new column "mass_cf_wet_siev". For those samples, the recorded
+    # volume corresponds with the coarse fragments mass in the new column
+    # "mass_cf_wet_siev_gross" (not "mass_cf_orig"). If only the old column
+    # "mass_cf_orig" is non-NA, the volume of stones corresponds with
+    # that mass. The final mass of coarse fragments is the sum of both columns
+    # (in most cases, only one of both columns is non-NA). Note that this
+    # column is sometimes shows the same mass as mass_cf_orig (or mass_cf_orig
+    # of some compiled samples) due to accidental reweighing since mass_cf_orig
+    # was originally hidden. Whether this is true, is indicated in column
+    # "ignore_mass_cf_wet_siev".
+    mass_cf_orig = `Massa steentjes (> 2 mm) (g) droog zonder recipiënt`,
+    # This column contains the tare volume (mL) of the cilinder with water
+    # BEFORE coarse fragments were added
+    # through water displacement after wet sieving
+    vol_cf_before = `Volume VOOR steentjes toevoegen (ml)`,
+    # This column contains the gross volume (mL) of the cilinder with water
+    # AFTER coarse fragments were added (i.e., volume of coarse fragments
+    # through water displacement after wet sieving)
+    vol_cf_after = `Volume NA steentjes toevoegen (ml)`,
+    # This column contains the net mass of any dry roots
     mass_roots =
-      `Massa wortels (droog; indien aanzienlijk) (g) zonder recipiënt`) %>%
+      `Massa wortels (droog; indien aanzienlijk) (g) zonder recipiënt`,
+    # Remarks during pretreatment
+    remarks_pretrt = ...25,
+    # This column is a logical ("Ja" for TRUE, NA for FALSE) indicating
+    # whether column "mass_cf" includes the recipient (i.e., gross mass)
+    is_mass_cf_gross = `Massa steentjes (oude kolom U) inclusief bakje?`,
+    # Should column "mass_cf_wet_siev_gross" be ignored because the mass of
+    # the same sample (or compiled samples) for which the mass was already
+    # recorded in column "mass_cf_orig" was re-recorded?
+    ignore_mass_cf_wet_siev =
+      `Kolom T to be ignored? (compiled sample)`
+    ) %>%
   # Using rename_with because of too long column name
-  rename_with(~"mass_before", all_of(paste0("Massa (g) monster voor ",
-                                            "(inclusief recipiënt zonder ",
-                                            "deksel, steentjes en evt. ",
-                                            "label)"))) %>%
+  # This column contains the gross mass of the full sample or the fine earth
+  # (after dry sieving) before it is placed in the oven at 105 °C
+  rename_with(~"mass_before_gross",
+              all_of(paste0("Massa (g) monster voor ",
+                            "(inclusief oven-recipiënt zonder ",
+                            "deksel, zonder steentjes en ",
+                            "zonder los label)"))) %>%
+  # This column contains the gross mass of the dry fine earth sample after
+  # drying (excl. coarse fragments).
+  rename_with(~"mass_after_fe_gross",
+              all_of(paste0("Massa fine earth (g) na ",
+                            "(inclusief recipiënt zonder ",
+                            "deksel, zonder steentjes, ",
+                            "zonder los label)"))) %>%
   # Remove records from 2024 test
   filter(!grepl("^WILDCARD2024_", sample_id)) %>%
-  select(sample_id, survey_date, mass_recipient, mass_before, mass_after,
-         mass_cf, mass_roots) %>%
+  select(sample_id, survey_date, any_of(columns_to_check),
+         remarks_pretrt, is_mass_cf_gross, ignore_mass_cf_wet_siev) %>%
   # Add sample_id_sample, plot_code_simple, institute_sampling,
   # sample_code, code_layer
   add_ids_simple() %>%
-  # mutate(
-  #   # Correct small typo
-  #   mass_before = case_when(
-  #     mass_before == "349/90" ~ "349.90",
-  #     TRUE ~ mass_before)) %>%
+  mutate(
+    mass_before_gross = case_when(
+      # Typo by lab pretreatment colleagues
+      grepl("yui", mass_before_gross) ~ NA,
+      TRUE ~ mass_before_gross),
+    vol_cf_before = case_when(
+      vol_cf_before == "/" ~ NA,
+      TRUE ~ vol_cf_before)
+    ) %>%
   mutate(across(all_of(columns_to_check),
-                ~ safe_numeric_convert(.x, cur_column())))
+                ~ safe_numeric_convert(.x, cur_column())),
+         remarks_pretrt = case_when(
+           trimws(toupper(as.character(remarks_pretrt))) == "NULL" ~
+             NA_character_,
+           TRUE ~ as.character(remarks_pretrt))) %>%
+  mutate(
+    # Corrections in WBL data
+    mass_recipient = case_when(
+      # Total sample mass and mass recipient not recorded (forgotten?),
+      # but coarse fragments were determined:
+      # assume mean mass_recipient from this plot
+      sample_id == "PL__WULS__1__NA__Transect III__M13_Bulk_Density" ~ 27.3,
+      TRUE ~ mass_recipient),
+    # Some special cases in which the CF values need to be gap-filled or
+    # replaced by 0
+    cf_zero =
+      # Some samples for which mass coarse fragments was missing in WBL,
+      # but which are clearly without stones based on other information
+      sample_id %in% c(
+        "DE__NWFVA__03-077__NA__NA__M61_Bulk_Density",
+        "SI__UL__6__NA__NA__M13_Bulk_Density",
+        "SI__UL__6__NA__NA__M36_Bulk_Density",
+        "HR__UNIUD/HSI__3__LI-OG__NA__M01_Bulk_Density",
+        "HR__UNIUD/HSI__3__LI-OG__NA__M13_Bulk_Density",
+        "HR__UNIUD/HSI__3__LI-OG__NA__M36_Bulk_Density",
+        "HR__UNIUD/HSI__3__LI-OG__NA__M61_Bulk_Density"
+      ) |
+      # Also for INBO NAs
+      (grepl("^BE-INBO", sample_id) & is.na(mass_cf_orig) &
+         is.na(mass_cf_wet_siev_gross)) |
+      # Some INBO samples were processed using dry sieving, and the sieving
+      # residu consisted of soil aggregates rather than stones, so better
+      # to ignore those so-called "coarse fragments"
+      (grepl("^BE-INBO", sample_id) &
+         grepl("Geen echte steentjes", remarks_pretrt)),
+    # Apply 0s
+    across(
+      c(mass_cf_wet_siev_gross, vol_cf_before),
+      ~ ifelse(cf_zero, 0, .)
+    ),
+    vol_cf_after = ifelse(cf_zero, NA_real_, vol_cf_after)) %>%
+  select(-any_of("cf_zero")) %>%
+  # Remove INBO WP3 samples
+  filter(!grepl("^BE-INBO-INBO_", sample_id))
+
 
 assertthat::assert_that(
-  all(is.na(undist_harm$mass_before) | !is.na(undist_harm$mass_recipient)),
+  all(is.na(undist_harm$mass_before_gross) |
+        !is.na(undist_harm$mass_recipient)),
   msg = "mass_recipient must not be NA when mass_before is not NA.")
 
 assertthat::assert_that(
-  all(is.na(undist_harm$mass_after) | !is.na(undist_harm$mass_recipient)),
-  msg = "mass_recipient must not be NA when mass_after is not NA.")
+  all(is.na(undist_harm$mass_after_fe_gross) |
+        !is.na(undist_harm$mass_recipient)),
+  msg = "mass_recipient must not be NA when mass_after (fine earth) is not NA.")
+
+assertthat::assert_that(
+  all(is.na(undist_harm$mass_after_total_gross) |
+        !is.na(undist_harm$mass_recipient)),
+  msg = "mass_recipient must not be NA when mass_after (total) is not NA.")
+
+
+
+
+mass_clean_ziploc_inbo <- 25.11 # g (with sticker)
+mass_recipient_residu <- # Assumption: field-moist
+  mean(undist_harm$mass_recipient_residu, na.rm = TRUE) - mass_clean_ziploc_inbo
+
+# 1400 kg m-3 is taken from literature
+# but can be replaced by a better value
+# for the density of roots
+density_roots <- 1400
+
 
 undist_harm <- undist_harm %>%
   # Calculate net mass
   # mass_cf and mass_roots are net already
   mutate(
-    mass_before_net = mass_before - mass_recipient,
-    mass_after_net = mass_after - mass_recipient)
+    mass_cf_wet_siev = case_when(
+      grepl("ignore", ignore_mass_cf_wet_siev, ignore.case = TRUE) ~ NA_real_,
+      # Bigger than 0 means it should be gross
+      (!is.na(mass_cf_wet_siev_gross) & mass_cf_wet_siev_gross > 0) ~
+        mass_cf_wet_siev_gross - mass_recipient,
+      TRUE ~ mass_cf_wet_siev_gross),
+    mass_cf_siev = case_when(
+      !is.na(mass_cf_orig) &
+        mass_cf_orig > 0 &
+        grepl("ja", is_mass_cf_gross, ignore.case = TRUE) ~
+        mass_cf_orig - mass_recipient,
+      TRUE ~ mass_cf_orig),
+    mass_cf =
+      ifelse(!is.na(mass_cf_wet_siev) | !is.na(mass_cf_siev),
+             pmax(coalesce(mass_cf_wet_siev, 0) + coalesce(mass_cf_siev, 0),
+                  0, na.rm = TRUE),
+             NA_real_),
+    # Mass of the coarse fragments (fraction) for which volume was determined
+    # (i.e., for some samples for which part of the coarse fragments was first
+    #  removed via dry sieving, and the remainder was later removed via
+    #  wet sieving, for which the volume was then determined)
+    mass_cf_for_vol =
+      ifelse(
+        (!is.na(mass_cf_wet_siev) &
+           mass_cf_wet_siev > 0 &
+           !is.na(mass_cf_siev) &
+           mass_cf_siev > 0),
+        mass_cf_wet_siev,
+        mass_cf),
+    vol_cf = case_when(
+      !is.na(vol_cf_before) & is.na(vol_cf_after) & vol_cf_before == 0 ~ 0,
+      TRUE ~ vol_cf_after - vol_cf_before),
+    # Estimated mass based on reported volume (to detect any inconsistencies)
+    mass_from_vol =
+      (vol_cf_after - vol_cf_before) * 2.39,
+    # Particle density in kg m-3
+    particle_density = ifelse(
+      !is.na(mass_cf_for_vol) & !is.na(vol_cf) &
+        mass_cf_for_vol > 0 & vol_cf > 0,
+      1E3 * mass_cf_for_vol / vol_cf,
+      NA_real_),
+    # Net mass of undisturbed samples including coarse fragments before drying
+    mass_before = case_when(
+      # Old method: coarse fragments were separated before recording mass_before
+      # and putting the sample in the oven. In other words, original
+      # mass_before represents fine earth only for the samples that were
+      # treated using the old method.
+      # Add mass of coarse fragments and any roots.
+      !is.na(mass_after_fe_gross) ~
+        mass_before_gross + coalesce(mass_cf, 0) +
+        coalesce(mass_roots, 0) - mass_recipient,
+      # Else (new method), coarse fragments are already included
+      TRUE ~ mass_before_gross - mass_recipient),
+    # Analogous for mass_after
+    mass_after = case_when(
+      # Old method:
+      # Add mass of coarse fragments and any roots.
+      !is.na(mass_after_fe_gross) ~
+        mass_after_fe_gross + coalesce(mass_cf, 0) +
+        coalesce(mass_roots, 0) - mass_recipient,
+      # Else (new method), coarse fragments are already included
+      TRUE ~ mass_after_total_gross - mass_recipient),
+    mass_after_fine_earth =
+      mass_after - coalesce(mass_cf, 0) - coalesce(mass_roots, 0))
 
-glimpse(undist_harm)
+if (apply_corrections) {
+
+  # Plausible range of observed particle densities
+  # 80 % quantile after filtering for vol_cf > 10
+  part_dens_plaus <- c(1976.706, 2724.126)
+
+  # Remove implausible volumes and particle densities
+
+  # Assumption: limit of quantification of volume determination is 5 mL
+  # (below that, it is difficult to identify differences in the measuring
+  #  cylinder by water displacement)
+
+  # Assumption: if there is an inconsistency between mass and volume of
+  # coarse fragments, the mass is usually more reliable than the volume
+  # (manually verified)
+
+  undist_harm <- undist_harm %>%
+    mutate(
+      vol_cf = ifelse(
+        !is.na(vol_cf) &
+          (vol_cf < 5 | particle_density < part_dens_plaus[1] |
+             particle_density > part_dens_plaus[2]),
+        NA_real_,
+        vol_cf),
+      particle_density = ifelse(
+        !is.na(vol_cf),
+        particle_density,
+        NA_real_)) %>%
+    mutate(
+      # Special case for "WSL__53__Murgtal__NA" M61 (100 cm3) that was splitted
+      # in order to subsample a disturbed sample for the analytical lab
+      # "count_rings" was already adjusted (including remaining undisturbed
+      # sample and stone, which was not included in WBL-undisturbed of
+      # central lab)
+      mass_cf = case_when(
+        plot_code_simple == "WSL__53__Murgtal__NA" & code_layer == "M61" ~
+          66.4,
+        TRUE ~ mass_cf),
+      vol_cf = case_when(
+        plot_code_simple == "WSL__53__Murgtal__NA" & code_layer == "M61" ~
+          NA_real_,
+        TRUE ~ vol_cf))
+
+} # End of "if apply_corrections"
+
+# Calculate grouped averages of particle densities for gap-filling
+
+  # Optional TO DO: incorporate particle density grouped par parent material
+  # class (lithology)
+
+  # Global - option 1 (slope of linear regression through origin)
+  pd_global <- 1E3 * coef(lm(mass_cf ~ vol_cf - 1, data = undist_harm))[1]
+
+  # Global - option 2 (weighted mean of particle density)
+  pd_global <-
+    with(undist_harm,
+         sum(particle_density * mass_cf, na.rm = TRUE) /
+           sum(mass_cf[!is.na(particle_density)], na.rm = TRUE))
+
+  # Gap-fill vol_cf
+
+  undist_harm <- undist_harm %>%
+    # Prepare data to use for gap-filling: weighted mean per plot
+    group_by(plot_code_simple) %>%
+    mutate(
+      pd_plot = if (any(!is.na(particle_density))) {
+        sum(particle_density * mass_cf, na.rm = TRUE) /
+          sum(mass_cf[!is.na(particle_density)], na.rm = TRUE)
+      } else {
+        NA_real_
+      }
+    ) %>%
+    ungroup() %>%
+    mutate(
+      particle_density_source = case_when(
+        !is.na(particle_density) ~ "Observed",
+        !is.na(pd_plot) ~ "Weighted mean for plot",
+        TRUE ~ "Weighted mean (all observations)"
+      ),
+      particle_density = coalesce(particle_density,
+                                  pd_plot,
+                                  pd_global),
+      vol_cf = ifelse(
+        is.na(vol_cf) & !is.na(mass_cf),
+        round(1E3 * mass_cf / particle_density),
+        vol_cf)
+    ) %>%
+    select(-any_of(c("pd_plot")))
+
+
+
 
 
 
@@ -562,133 +1111,150 @@ glimpse(undist_harm)
 ## 4.2. Calculate areal masses ----
 #  Bulk density (of fine earth), vol% coarse fragments, areal mass forest floor
 
-df_layers_undist <- undist_harm %>%
-  select(-mass_recipient, -mass_before, -mass_after) %>%
-  rename(mass_before = mass_before_net) %>%
-  rename(mass_after = mass_after_net) %>%
-  left_join(df_layers %>%
-              select(plot_code_simple, code_layer,
-                     vol_ring, count_rings, bulk_den,
-                     P1_coaf_2mm, P1_coaf_50mm,
-                     contains("depth_bedrock"),
-                     wp) %>%
-              rename(mass_undist_moist = bulk_den),
-            by = join_by("plot_code_simple", "code_layer")) %>%
-  relocate(mass_undist_moist, .before = "mass_before") %>%
-  mutate(code_layer = factor(code_layer,
-                             levels = code_layer_levels)) %>%
-  # Arrange by plot and layer
-  arrange(institute_sampling, plot_code_simple, code_layer)
+  source("./src/functions/uncertainty_functions.R")
 
-View(df_layers_undist)
+  # TO DO: special approach for Seeliwald!
+  # (bulk density based on areal mass peat layers)
 
+  # TO DO: calculate coarse_fragment_vol_ring
+  # coarse_fragment_vol_ring = 1E2 * vol_cf / (count_rings * vol_ring)
+  # (1 mL = 1 cm3)
 
-
-source("./src/functions/uncertainty_functions.R")
-
-df_layers_undist <- df_layers_undist %>%
-  rename(coaf_2mm = P1_coaf_2mm) %>%
-  rename(coaf_50mm = P1_coaf_50mm) %>%
+  df_layers <- df_layers %>%
+    left_join(
+      undist_harm %>%
+        select(plot_code_simple, code_layer,
+               mass_before, mass_after, mass_after_fine_earth,
+               mass_cf, vol_cf, particle_density, particle_density_source,
+               mass_roots, remarks_pretrt) %>%
+        rename(mass_before_undist = mass_before,
+               mass_after_undist = mass_after),
+      by = join_by("plot_code_simple", "code_layer")
+    ) %>%
   mutate(
+    mass_before_dist = mass_before,
+    mass_after_dist = mass_after,
+    mass_before = case_when(
+      # Use most important masses only:
+      # "dist" for OFH and "undist" for below-ground
+      grepl("^M", code_layer) ~ mass_before_undist,
+      TRUE ~ mass_before_dist
+    ),
+    mass_after = case_when(
+      grepl("^M", code_layer) ~ mass_after_undist,
+      TRUE ~ mass_after_dist
+    ),
     # Dry mass fraction (dry mass relative to field-moist mass)
-    dry_to_moist = mass_after / mass_before,
-    # Gap-fill mass_cf and mass_roots (net) with 0
-    mass_cf = coalesce(mass_cf,
-                       0),
-    mass_roots = coalesce(mass_roots,
-                          0),
+    dry_to_moist = case_when(
+      # Forest floor layers
+      !is.na(dry_to_moist) ~ dry_to_moist,
+      # Below-ground undisturbed
+      TRUE ~ pmin(mass_after_undist / bulk_den, 1)
+    ),
+    dry_to_moist_central = case_when(
+      # Forest floor layers
+      !is.na(dry_to_moist_central) ~ dry_to_moist_central,
+      # Below-ground undisturbed
+      TRUE ~ pmin(mass_after_undist / mass_before_undist, 1)
+    ),
+    # Corrected mass fine earth (dry, in g)
+    # Correct for field-moist residu left in original recipient (ziploc bag)
+    # from the field after transfering the undisturbed sample to the oven
+    # recipient
+    mass_after_fine_earth_corr =
+      mass_after_fine_earth * (bulk_den / (bulk_den - mass_recipient_residu)),
+    # Total volume of rings (1 mL = 1 cm3)
+    vol_total = count_rings * vol_ring,
+    # Volume occupied by fine earth (1 mL = 1 cm3)
+    vol_fine_earth = vol_total - coalesce(vol_cf, 0) -
+      (coalesce(mass_roots, 0) * 1E3 / density_roots),
     # "bulk density" (kg m-3) refers to the bulk density of fine earth,
     # defined as "the ratio of the oven-dry mass of the fine earth (< 2 mm) to
     # the volume of the fine earth and pore space of the soil"
     # (basically, the bulk density in stone-free areas)
-    bulk_density =
-      round(1E-3 * mass_after / # convert from g to kg
-              (count_rings * vol_ring * 1E-6 - # convert from cm3 to m3
-                 (1E-3 * mass_cf / 2650) - # Volume in ring occupied
-                 # by stones (< 50 mm) in m3
-                 # TO DO: check if particle density is
-                 # reported in Survey123 app
-                 (1E-3 * mass_roots / 1400))) # Volume in ring occupied by roots
-    # in m3
-    # 1400 kg m-3 is taken from literature
-    # but can be replaced by a better value
-    # for the density of roots
+    bulk_density = round(
+      1E-3 * mass_after_fine_earth_corr / # convert from g to kg
+        (vol_fine_earth * 1E-6)) # convert from cm3 to m3
   ) %>%
   rowwise() %>%
   mutate(bd_unc = list(add_bd_uncertainty(bulk_density))) %>%
   unnest_wider(bd_unc) %>%
   mutate(
     # Coarse fragments
-    # ---
-    # First data source: lab (undisturbed samples)
-    # Assumption: this includes coarse fragments < 50 mm.
-    # This data source can be weighed more precisely and accounts
-    # to some extent for spatial variation (5 sampling points):
-    # 1. Calculate mass percentage
-    cf_mass_ring = 1E2 * mass_cf / (mass_after + mass_cf),
-    # 2. Convert mass percentage to volumetric percentage
-    coarse_fragment_vol_ring =
-      (cf_mass_ring * bulk_density) /
-      (2650 - # TO DO: check if particle density is reported in Survey123 app
-         1E-2 * cf_mass_ring * (2650 - bulk_density)),
-    # ---
-    # Second data source: field estimation (e.g., based on profile pit)
-    # This carries a bigger uncertainty (visual estimation; one sampling point)
-    # but is the main data source for coarse fragments > 50 mm
-    # ---
-    # Calculate coarse_fragment_vol based on both data sources
-    # Question: how to integrate coarse_fragment_vol_ring with
-    # (coaf_50mm - coaf_2mm),
-    # i.e., the visually estimated fraction between 2 - 50 mm?
-    # · Lab data are more spatially representative, and measured more accurately
-    #   However, they can have a bias because not all stones will be
-    #   included in the ring (e.g., if you hit a stone of 40 mm with the Kopecky
-    #   ring, it won't be possible to take that sample, and you will usually
-    #   have a new attempt to take an undisturbed sample next to it, where there
-    #   may not be stones)
-    # · Field estimate will have a considerable uncertainty (e.g., often one
-    #   sampling point so no spatial variation)
-    # Remark: quite some coaf_2mm are < coaf_50mm really possible. Therefore,
-    # assume that coaf_2mm are the coarse fragments in that case, and correct
-    # We need this for the uncertainty estimation.
-    coaf_2mm = ifelse(
-      coaf_2mm < coaf_50mm,
-      min(coaf_2mm + coaf_50mm, 100),
-      coaf_2mm),
-    coarse_fragment_vol = coarse_fragment_vol_ring + coaf_50mm
+    coarse_fragment_vol_ring = case_when(
+      # Murgtal M61, for which the undisturbed sample was split
+      # to have a subsample for the analytical lab:
+      # vol_cf corresponds with the volume of the entire ring
+      plot_code_simple == "WSL__53__Murgtal__NA" & code_layer == "M61" ~
+        1E2 * vol_cf / (1 * vol_ring),
+      TRUE ~ 1E2 * vol_cf / vol_total
+    )
   ) %>%
-  relocate(coaf_2mm, coaf_50mm, .before = coarse_fragment_vol_ring) %>%
+  mutate(
+    # Summarise coarse fragments
+    # ---
+    P1_coaf_2_50mm = P1_coaf_2mm - P1_coaf_50mm,
+    coarse_fragment_2_50mm_vol =
+      rowMeans(cbind(coarse_fragment_vol_ring, P1_coaf_2_50mm), na.rm = TRUE),
+    coarse_fragment_vol = coarse_fragment_2_50mm_vol + P1_coaf_50mm
+  ) %>%
   rowwise() %>%
-  mutate(cf_unc = list(add_cf_uncertainty(coaf_2mm,
-                                          coaf_50mm,
+  # TO DO: update based on spatial CF data by VUK
+  mutate(cf_unc = list(add_cf_uncertainty(P1_coaf_2mm,
+                                          P1_coaf_50mm,
                                           coarse_fragment_vol_ring))) %>%
   unnest_wider(cf_unc)
 
-# Question for Stijn: does mass_after for undisturbed samples include stones?
+
+
+# TO DO:
+# Keep in mind that field mass (100) of BD-M01 by
+# "BGD-NP__1__Berchtesgaden National Park__F066" was possibly a mistake
+# (maybe not).
+
+# TO DO:
+# Filter by bulk density mass (field) > 0. Records for which this mass equals 0
+# should be absent in the sample list.
+
+# TO DO:
+# Keep in mind that lab coarse fragments content of M36 for
+# "NWFVA__03-060__Meinsberg__NA" is not realistic (as reported by partner)
+
+# TO DO:
+# "WSL__23__Boedmerenwald__NA": Keep in mind that below-ground samples were
+# absent due to the presence of bedrock below OFH. However, the reported
+# bedrock depth was 7.5 cm → Add this thickness to OFH? (request feedback WSL)
+
+# TO DO: add "vol_perc_fine_earth"
+
+
+
+
+
+
+
 
 
 
 
 # 5. Compile and tidy pre-processed data ----
 
-df_layers <- df_layers %>%
-  # We renamed those
-  select(-any_of(c("P1_coaf_2mm", "P1_coaf_50mm", "bulk_den"))) %>%
-  left_join(
-    df_layers_undist %>%
-      rename(
-        mass_before_undist = mass_before,
-        mass_after_undist = mass_after,
-        dry_to_moist_undist = dry_to_moist) %>%
-      # Some variables are still in df_layers
-      select(-any_of(c("institute_sampling", "count_rings", "vol_ring",
-                       "depth_bedrock", "depth_bedrock_min",
-                       "depth_bedrock_max", "wp"))),
-    by = join_by("plot_code_simple", "code_layer"))
+# Remove unnecessary columns + Add lab data
 
-glimpse(df_layers)
+# TO DO: in some cases, it will be necessary to LOCF (or spline?) the analyses
+# from the layer above, when no samples were sent to the lab for the lowest
+# layer (e.g., M36 of BGD-NP__1__Berchtesgaden National Park__F048)
+# Splines (?) for layer with absent disturbed and undisturbed samples,
+#  e.g., "DISAFA - UNITO__14__Alpe Cusogna__NA" M61
 
-# Also add lab data
+# TO DO (WBL dist + results RF analytical lab):
+# "NWFVA__06-025__Kinzigaue__b": four disturbed below-ground samples contained
+# no indication of depth. During lab pretreatment, they were randomly allocated
+# to a certain depth, but this needs to be corrected - probably best assuming
+# a decreasing SOC with increasing depth...
+
+# TO DO OFH samples of VUK VUK__1__Zofin__b and VUK__1__Zofin__c were also
+# switched at the central lab.
 
 # In the end, you can make the dataframe(s) a bit more neat. You could
 # make one dataframe with metadata per plot (e.g., WRB, slope, weather...)
@@ -698,17 +1264,40 @@ glimpse(df_layers)
 # plot and layer, the final calculated values and their uncertainties.
 # (similar to "layer 1" of ICP F)
 
+# TO DO: metadata (weather) for eDNA are different for three NW-FVA plots
+# (resampling due to loss eDNA samples)
 
+# Do we report those original masses (in addition to relative percentages)?
+# select(-mass_dry_leaves, -mass_dry_twigs_medium, -mass_dry_twigs_small)
 
-
-
-
+# TO DO:
+# Bulk density using pedotransfer for plots for which no undisturbed samples
+# could be taken, e.g., "BGD-NP__1__Berchtesgaden National Park__F016"
 
 
 
 # 6. Compile inconsistencies ----
 
+
 ## 6.1. Compile ----
+
+reports <- list(
+  inconsistencies_app_long = res_app_long$inconsistencies,
+  inconsistencies_app_numeric = res_app_numeric$inconsistencies,
+  inconsistencies_lab_numeric = res_lab_numeric$inconsistencies
+) %>%
+  # Remove NULL (for functions for which no report is created)
+  purrr::compact()
+
+inc_report <- bind_rows(reports)
+
+# Now you automatically know which function produced which report.
+# inc_report <- bind_rows(reports, .id = "source")
+# inc_report <- bind_rows(
+#   purrr::map(results, "inconsistencies"),
+#   .id = "source")
+
+
 
 # So far, these are the implemented inconsistency checks, together with
 # the name of the inconsistency report in the Global Environment and the name
@@ -729,9 +1318,9 @@ inc_reports <- c(
   #  and additional sampling points should not exceed 5 (unlikely). Please
   #  check how many undisturbed samples you took at the given depth."
   # INCONSISTENCY 4
-  # "The total number of reported undisturbed samples from the central pit (P1)
-  #  and additional sampling points should not be 1 (unlikely). Please check
-  #  how many undisturbed samples you took at the given depth."
+  # "Identical bedrock depth values are reported across sampling points (P2–9).
+  #  This suggests the values may have been copied from P1 rather than
+  #  independently observed. Please confirm how to interpret this.
   # INCONSISTENCY 5
   # "Bedrock depth is missing (NA) in some sampling points (P1-5), while others
   #  report shallow bedrock. Please confirm that all missing values are
@@ -745,14 +1334,22 @@ inc_reports <- c(
   #  number and volume of rings"
   # app_data_long()
   # INCONSISTENCY 8
-  # "Subsample forest floor for lab cannot weigh more than sum of
+  # "Subsample(s) forest floor for lab cannot weigh more than sum of
   #  all reported forest floor masses across sampling points"
   # INCONSISTENCY 9
   # "For depths below the deepest reported bedrock depth no samples are
   #  expected to be taken"
   # INCONSISTENCY 10
   # "Samples weighing more than 0 g are expected to show 'sample collected'"
-  #
+  # INCONSISTENCY 11
+  # "Reported slope is high and may have been accidentally reported as a
+  #  percentage instead of decimal degrees. Please confirm the unit."
+  # INCONSISTENCY 12
+  # "P1 reports 100 vol% coarse fragments for this layer, while (disturbed)
+  #  samples were collected at other points in the same layer, indicating that
+  #  fine earth was present. This may reflect spatial variation. The plot-
+  #  representative coarse fragment content will be capped at minimum 80 vol%
+  #  so that this layer contributes to the carbon stock."
   # app_data_long()
   "inconsistencies_app_long"
 )
@@ -780,6 +1377,24 @@ inc_reports <- c(
 # - Compare sample list with app
 # - check distance from HIS metadata table coordinates
 # - coordinates should not be 0
+
+# (TO DO (PIR): if surface_frame > 1: divide by 1E3)
+
+# TO DO (PIR): compare mass_dry_partner with dist
+# (TO DO (PIR): compare mass_dry_partner with mass_before for potential mismatch
+# (note that it is not problematic (we use mass_dry_partner for moisture
+# content) but just in case there is a problem with mass_dry_partner))
+
+# TO DO (PIR): calculating areal masses: check if tamass > dist!
+# (also check edna1 and edna2 - e.g., for LWF)
+# What is more reliable: dist or tamass?
+# Use dist if difference less than 5 %? (e.g., Haras)
+
+
+
+
+
+
 
 
 
