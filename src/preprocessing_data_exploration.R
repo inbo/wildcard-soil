@@ -52,16 +52,12 @@ df_layers_undist_check2 <- df_layers_undist_check %>%
     #                     mass_after_net),
     dry_to_moist_central = mass_after / mass_before,
     dry_to_moist = mass_after / bulk_den,
-    before_to_moist_field = mass_before / bulk_den,
+    before_to_field_moist = mass_before / bulk_den,
     # bulk_den_estimate = (1E-3 * mass_lab) / (1E-6 * vol_total),
     bd_field =
       (1E-3 * (bulk_den - coalesce(mass_cf, 0) - coalesce(mass_roots, 0))) /
       (1E-6 * ((vol_total) - coalesce(vol_cf, 0) -
-         (coalesce(mass_roots, 0) * 1E3 / 1400))),
-    # stones = case_when(
-    #   (!is.na(P1_coaf_2mm) & P1_coaf_2mm > 1) |
-    #     (!is.na(P1_coaf_50mm) & P1_coaf_50mm > 5) ~ "Ja!",
-    #   TRUE ~ "Nee")
+         (coalesce(mass_roots, 0) * 1E3 / 1400)))
     )
 
 
@@ -115,8 +111,8 @@ for (partner_i in unique(df_layers_undist_check2$institute_sampling)) {
     )
 
   n_plots <- n_distinct(
-    df_ff_check$plot_code_simple[which(
-      df_ff_check$institute_sampling == partner_i)])
+    df_layers_undist_check2$plot_code_simple[which(
+      df_layers_undist_check2$institute_sampling == partner_i)])
   ncol <- 4
   nrow <- ceiling(n_plots / ncol)
   height_per_row <- 1
@@ -157,7 +153,7 @@ ggsave(filename = paste0("mass_after_versus_bulk_den",
        dpi = 500)
 
 
-dry_to_moist_field_plaus <- c(0.4, 1)
+dry_to_field_moist_plaus <- c(0.3, 1)
 
 p <- ggplot(
   df_layers_undist_check2,
@@ -168,7 +164,7 @@ p <- ggplot(
     text = paste0(plot_code_simple, "_", code_layer)
   )) +
   geom_jitter(width = 0.2, height = 0, alpha = 0.6) +
-  geom_hline(yintercept = dry_to_moist_field_plaus,
+  geom_hline(yintercept = dry_to_field_moist_plaus,
              colour = "red")
 
 ggplotly(p, tooltip = "text")
@@ -202,18 +198,18 @@ ggsave(filename = paste0("mass_before_versus_bulk_den",
        path = paste0("./output/data_quality/undisturbed/"),
        dpi = 500)
 
-before_to_moist_field_plaus <- c(0.4, 1.02)
+before_to_field_moist_plaus <- c(0.3, 1.015)
 
 p <- ggplot(
   df_layers_undist_check2,
   aes(
     x = 1,
-    y = before_to_moist_field,
+    y = before_to_field_moist,
     colour = code_layer,
     text = paste0(plot_code_simple, "_", code_layer)
   )) +
   geom_jitter(width = 0.2, height = 0, alpha = 0.6) +
-  geom_hline(yintercept = before_to_moist_field_plaus,
+  geom_hline(yintercept = before_to_field_moist_plaus,
              colour = "red")
 
 ggplotly(p, tooltip = "text")
@@ -247,7 +243,7 @@ ggsave(filename = paste0("mass_after_versus_mass_before",
 
 
 
-dry_to_moist_lab_plaus <- c(0.5, 1.01)
+after_to_before_plaus <- c(0.5, 1.01)
 
 p <- ggplot(
   df_layers_undist_check2,
@@ -258,7 +254,7 @@ p <- ggplot(
     text = paste0(plot_code_simple, "_", code_layer)
   )) +
   geom_jitter(width = 0.2, height = 0, alpha = 0.6) +
-  geom_hline(yintercept = dry_to_moist_lab_plaus,
+  geom_hline(yintercept = after_to_before_plaus,
              colour = "red")
 
 ggplotly(p, tooltip = "text")
@@ -353,7 +349,7 @@ p <- ggplot(
 
 ggplotly(p, tooltip = "text")
 
-ggsave(filename = paste0("bulk_density_moist_field",
+ggsave(filename = paste0("bulk_density_field_moist",
                          ".png"),
        plot = p,
        path = paste0("./output/data_quality/undisturbed/"),
@@ -459,8 +455,8 @@ for (partner_i in unique(df_layers_undist_check$institute_sampling)) {
     )
 
   n_plots <- n_distinct(
-    df_ff_check$plot_code_simple[which(
-      df_ff_check$institute_sampling == partner_i)])
+    df_layers_undist_check$plot_code_simple[which(
+      df_layers_undist_check$institute_sampling == partner_i)])
   ncol <- 4
   nrow <- ceiling(n_plots / ncol)
   height_per_row <- 1
@@ -554,8 +550,8 @@ for (partner_i in unique(df_layers_undist_check$institute_sampling)) {
     )
 
   n_plots <- n_distinct(
-    df_ff_check$plot_code_simple[which(
-      df_ff_check$institute_sampling == partner_i)])
+    df_layers_undist_check$plot_code_simple[which(
+      df_layers_undist_check$institute_sampling == partner_i)])
   ncol <- 4
   nrow <- ceiling(n_plots / ncol)
   height_per_row <- 1
@@ -568,6 +564,13 @@ for (partner_i in unique(df_layers_undist_check$institute_sampling)) {
          dpi = 500,
          width = 6.81,                 # fixed width
          height = nrow * height_per_row + 2)      # dynamic height
+
+  # The "weird" cases with lower field-moist bulk density than real
+  # bulk density are not a problem. The final bulk_density is correct,
+  # the original field-moist bulk_density was most likely a typo:
+  # "INBO__2__Wijnendalebos__NA" M13
+  # "BFNP__IP_10__IP_Hohensteingehaenge__NA" M36
+  # "BGD-NP__1__Berchtesgaden National Park__F048" M01
 
 } # End of for loop along partners
 
@@ -795,7 +798,7 @@ p <- undist_harm %>%
 
 ggplotly(p, tooltip = "text")
 
-ggsave(filename = paste0("particle_density_after_validation",
+ggsave(filename = paste0("particle_density_before_validation",
                          ".png"),
        plot = p,
        path = paste0("./output/data_quality/undisturbed/"),
