@@ -70,7 +70,8 @@ glimpse(his_ids)
 # Data Survey123 app
 
 source("./src/functions/get_app_data.R")
-app_data_wide <- get_app_data()
+res_get_app_data <- get_app_data()
+app_data_wide <- res_get_app_data$app_data_wide
 
 # Get info about the MTA from the partner overview table
 

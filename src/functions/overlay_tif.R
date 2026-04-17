@@ -59,6 +59,11 @@ overlay_tif <- function(sf1,
       as_sf
   }
 
+  sf1 <- sf1 %>%
+    mutate(
+      row_id = row_number()
+    )
+
 
   # 3. Extract raster values to vector points ----
 
@@ -156,8 +161,8 @@ overlay_tif <- function(sf1,
     sf1 <- sf1 %>%
       left_join(sf1_sub %>%
                   st_drop_geometry() %>%
-                  select(plot_id, col_overlay_buffer),
-                by = "plot_id") %>%
+                  select(row_id, col_overlay_buffer),
+                by = "row_id") %>%
       mutate(
         col_overlay = ifelse(
           (is.na(col_overlay) | col_overlay %in% values_to_avoid) &
@@ -253,8 +258,8 @@ overlay_tif <- function(sf1,
     sf1 <- sf1 %>%
       left_join(sf1_sub %>%
                   st_drop_geometry() %>%
-                  select(plot_id, col_overlay_buffer),
-                by = "plot_id") %>%
+                  select(row_id, col_overlay_buffer),
+                by = "row_id") %>%
       mutate(
         col_overlay = ifelse(
           (is.na(col_overlay) | col_overlay %in% values_to_avoid) &
@@ -287,6 +292,8 @@ overlay_tif <- function(sf1,
 
   names(sf1)[which(names(sf1) == "col_overlay")] <- name_col
 
+  sf1 <- sf1 %>%
+    select(-row_id)
 
 
   return(sf1)

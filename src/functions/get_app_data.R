@@ -327,7 +327,7 @@ get_app_data <- function(path = NULL,
       mutate(globalid = str_remove_all(globalid, "[\\{\\}]") %>%
                str_to_lower()) %>%
       mutate(survey_date = as.Date(parse_date(date_time)),
-             survey_month = as.integer(format(survey_date, "%M")),
+             survey_month = as.integer(format(survey_date, "%m")),
              survey_year = as.integer(format(survey_date, "%Y"))) %>%
       mutate(across(c(
         plot_id, site_id, res_id_inst, surface_frame, latitude, longitude,
