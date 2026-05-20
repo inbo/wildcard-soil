@@ -1,6 +1,7 @@
 
 summarise_bedrock_depths <- function(df_bedrock,
-                                     iter = 2000) {
+                                     iter = 2000,
+                                     correction_status = "with_corrections") {
 
   # SAMPLING DESIGN ---
 
@@ -115,7 +116,7 @@ summarise_bedrock_depths <- function(df_bedrock,
 
   # Create directory to save models (.RDS) if needed
 
-  model_dir <- here::here("models", "bedrock_brms")
+  model_dir <- here::here("models", "bedrock_brms", correction_status)
   if (!dir.exists(model_dir)) {
     dir.create(model_dir, recursive = TRUE)
   }
@@ -136,7 +137,7 @@ summarise_bedrock_depths <- function(df_bedrock,
     iter = 4, # setting to low number for empty model
     family = Beta(),
     backend = "cmdstanr",
-    file = here::here("models", "bedrock_brms", "m_depth"),
+    file = here::here("models", "bedrock_brms", correction_status, "m_depth"),
     file_refit = "on_change"
   )
 
@@ -152,7 +153,8 @@ summarise_bedrock_depths <- function(df_bedrock,
       iter = iter,
       family = Beta(),
       backend = "cmdstanr",
-      file = here::here("models", "bedrock_brms", paste0("m_depth_", y)),
+      file = here::here("models", "bedrock_brms", correction_status,
+                        paste0("m_depth_", y)),
       file_refit = "on_change"
     )
     return(m)
@@ -216,11 +218,14 @@ summarise_bedrock_depths <- function(df_bedrock,
     theme(axis.text.y = element_blank(),
           aspect.ratio = 1)
 
-  ggsave(filename = "bedrock_depth_predictions.png",
+  suppressMessages({
+     ggsave(filename = "bedrock_depth_predictions.png",
          plot = p,
-         path = here::here("models", "bedrock_brms"),
+         path = here::here("models", "bedrock_brms", correction_status),
          dpi = 500,
          width = 6.81)
+  })
+
 
   # Check if Rhat values (diagnostic for chains mixing) are fine
   # Should be <= 1.01, but a little higher (1.03) is still acceptable for
