@@ -290,10 +290,11 @@ get_lab_data <- function() {
     #                              sql_template = "default",
     #                              show_query = FALSE)
 
-    data_lab_i <- read_lims_data(connection = connection,
-                                 project = c(rf_i),
-                                 sql_template = "default",
-                                 show_query = FALSE)
+    data_lab_i <- suppressMessages(
+      read_lims_data(connection = connection,
+                     project = c(rf_i),
+                     sql_template = "default",
+                     show_query = FALSE))
 
     if (nrow(data_lab_i) == 0) {
 
@@ -317,13 +318,128 @@ get_lab_data <- function() {
       # Automatically detect and convert columns that contain only
       # numeric-convertible values to numeric class
       mutate(across(
-        where(~ is.character(.) && all(grepl("^[0-9,\\.]+$", ., perl = TRUE))),
+        where(~ is.character(.) &&
+                all(
+                  is.na(.) |
+                    grepl("^[0-9,.]+$", .)
+                )),
         ~ as.numeric(gsub(",", ".", .))
       )) %>%
       # Remove samples from duplicate analysis
-      filter(!OrigineelStaal %in% samples_dup) %>%
-      # Rename the column names in order to ignore the lab's test and result
-      # replicates in the column names
+      filter(!OrigineelStaal %in% samples_dup)
+
+    # Sometimes, there are multiple columns for a certain parameter,
+    # which are differentiated by the suffixes "__x__y".
+    # x: test replicate
+    # y: result replicate
+    # If multiple valid values are present for the same parameter,
+    # the value from the highest test replicate (first number = x)
+    # is in principle retained. Normally, only one result is reported per test,
+    # so the result replicate (second number in "__x__y") should usually be
+    # the same (0 or 1).
+
+    # Merge columns:
+
+    # Original column names without replicate suffixes like "__1__1"
+    col_names <- str_remove(names(datax_lab_i), "__[0-9]+__[0-9]+$")
+
+    # Parameters with multiple columns
+    dup_pars <- unique(col_names[duplicated(col_names)])
+
+    # If there are any duplicated columns
+    if (!identical(dup_pars, character(0))) {
+
+      alerts <- list()
+
+      for (par in dup_pars) {
+
+        # Columns belonging to this parameter
+        cols_par <- names(datax_lab_i)[col_names == par]
+
+        # Extract subset
+        tmp <- datax_lab_i %>%
+          select(all_of(cols_par))
+
+        # Rowwise unique non-NA values
+        vals_unique <- apply(tmp, 1, function(x) {
+          unique(na.omit(x))
+        })
+
+        # Detect inconsistent rows
+        inconsistent <- lengths(vals_unique) > 1
+
+        if (any(inconsistent)) {
+
+          alerts[[par]] <- which(inconsistent)
+
+          message(
+            "Inconsistent values detected for parameter: '",
+            par, "'\nin RF: '", rf_i,
+            "'\nin sample(s):\n",
+            paste(datax_lab_i$ExternSampleID[which(inconsistent)],
+                  collapse = ",\n")
+          )
+        }
+
+        # Collapse to one value per row
+        datax_lab_i[[par]] <- apply(tmp, 1, function(x) {
+
+          # Keep non-NA values
+          keep <- !is.na(x)
+          vals <- x[keep]
+
+          # No values
+          if (length(vals) == 0) {
+            return(NA_real_)
+          }
+
+          # Only one unique value
+          if (length(unique(vals)) == 1) {
+            return(vals[1])
+          }
+
+          # If multiple different non-NA values for the given parameter x sample
+          # "__x__y":
+          # → use value for the highest x
+          # → if x is tied, use value for the highest y
+
+          # Corresponding column names
+          cols_keep <- names(x)[keep]
+
+          # Extract x and y from "__x__y"
+          suffixes <- stringr::str_match(
+            cols_keep,
+            "__([0-9]+)__([0-9]+)$"
+          )
+
+          # Convert to numeric
+          x_rank <- as.numeric(suffixes[, 2])
+          y_rank <- as.numeric(suffixes[, 3])
+
+          # Order by highest x, then highest y
+          ord <- order(x_rank, y_rank, decreasing = TRUE)
+
+          # Return preferred value
+          vals[ord[1]]
+
+        })
+
+      } # End of loop across duplicated parameters
+
+      # Remove original replicated columns
+      datax_lab_i <- datax_lab_i %>%
+        select(
+          -any_of(c(names(datax_lab_i)[col_names %in% dup_pars]))
+        )
+
+    } # End of "if there are any duplicated columns"
+
+
+    # Continue data preparations
+
+    datax_lab_i <- datax_lab_i %>%
+      # Rename the (non-duplicated) column names in order to ignore the
+      # lab's test and result replicates in the column names
       # (i.e., remove trailing patterns of "__<number>__<number>")
       rename_with(~ gsub("__\\d+__\\d+$", "", .x)) %>%
       mutate(
@@ -390,7 +506,7 @@ get_lab_data <- function() {
     data_lab <- bind_rows(data_lab,
                           datax_lab_i)
 
-  }
+  } # End of loop across RFs
 
 cat("\n\n\nNone of the lab results are ready for the following RFs:\n")
 cat(rfs_no_results)
