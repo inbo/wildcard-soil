@@ -1,5 +1,5 @@
 
-get_data_local_lab <- function() {
+get_data_local_lab <- function(create_inconsistency_report = TRUE) {
 
   # Compiles forest floor masses from the local lab
 
@@ -105,6 +105,7 @@ get_data_local_lab <- function() {
   }
 
 
+  if (create_inconsistency_report) {
 
   # INCONSISTENCY 1 ----
 
@@ -182,10 +183,7 @@ get_data_local_lab <- function() {
     }
   }
 
-
-  assign(name_export, inconsistencies_local_lab_numeric, envir = .GlobalEnv)
-  cat(paste0("Object '", name_export, "' is imported in global environment.\n"))
-
+  } # End of "if create_inconsistency_report"
 
 
   # If there are any problems with non-numeric values, correct them here
@@ -206,8 +204,22 @@ get_data_local_lab <- function() {
         mass_dry_ofh = 1150))
 
 
-  return(all_local_lab)
 
+
+
+
+  # Return datasets ----
+
+  out <- list(
+    df_local_lab = all_local_lab
+  )
+
+  if (create_inconsistency_report) {
+    # Inconsistencies
+    out$inconsistencies <- as_tibble(inconsistencies_local_lab_numeric)
+  }
+
+  return(out)
 
 
 }
