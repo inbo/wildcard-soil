@@ -32,7 +32,8 @@ stopifnot(require("tidyverse"),
           require("here"),
           require("sf"),
           require("terra"),
-          require("stars"))
+          require("stars"),
+          require("ggtext"))
 
 # Source URLs of sensitive Google Drive links
 source("./data/sensitive_metadata/google_drive_links.R")
@@ -49,6 +50,7 @@ source("./data/sensitive_metadata/google_drive_links.R")
 ## · Initial script settings
 
 apply_corrections <- TRUE
+create_inconsistency_report <- TRUE
 
 
 ## · Site metadata ----
@@ -64,19 +66,7 @@ if (!exists("wp3_sites", envir = globalenv())) {
 }
 
 
-# write.table(his,
-#             file = "./data/his.csv",
-#             row.names = FALSE,
-#             na = "",
-#             sep = ";",
-#             dec = ".")
-#
-# write.table(wp3_sites,
-#             file = "./data/wp3_sites.csv",
-#             row.names = FALSE,
-#             na = "",
-#             sep = ";",
-#             dec = ".")
+
 
 
 
@@ -96,7 +86,8 @@ app_data_wide <- res_get_app_data$app_data_wide
 # inconsistencies
 
 source("./src/functions/app_data_long.R")
-res_app_data_long <- app_data_long(app_data_wide = app_data_wide)
+res_app_data_long <- app_data_long(app_data_wide = app_data_wide,
+                                   apply_corrections = apply_corrections)
 
 df_layers_out <- res_app_data_long$df_layers
 df_plot <- res_app_data_long$df_plot
@@ -111,8 +102,9 @@ df_sampling_points <- res_app_data_long$df_sampling_points
 # (spreadsheet named “forest_floor_data_[institute]”)
 
 source("./src/functions/get_data_local_lab.R")
+res_get_data_local_lab <- get_data_local_lab()
 
-df_local_lab <- get_data_local_lab()
+df_local_lab <- res_get_data_local_lab$df_local_lab
 
 
 
@@ -142,23 +134,17 @@ data_lab <- get_lab_data()
 if (nrow(data_lab) > 0) {
 
   data_lab <- data_lab %>%
-  # Add sample_id_sample, plot_code_simple, institute_sampling,
+  # Add sample_id_simple, plot_code_simple, institute_sampling,
   # sample_code, code_layer
   # At the moment it's not possible to test this using 2025 lab data, but
   # it should work out (since sample_id should be the same like in the WBLs)
   add_ids_simple()
+
+  assertthat::assert_that(all(!is.na(data_lab$plot_code_simple)),
+                          msg = paste0("Something went wrong with ",
+                                       "column 'sample_id_simple'"))
 }
 
-# Note:
-# LWF__65_a__Friedergries__NA OFH_carbon has been retaken during the second
-# sampling campaign by LWF, as the first sample contained a lot of roots
-# (which were removed before lab analysis)
-# That original sample is named "DE__LWF__65_a__NA__NA__OFH_carbon" in the
-# RF (V-25V006-04), while the new (better) sample is named
-# "DE__LWF__65_a__NA__NA__OFH_carbon_b" → better to proceed with these results
-
-# VUK__1__Zofin__b OFH and VUK__1__Zofin__c OFH are switched at central lab
-# INBO! (note: forest floor masses already adjusted in section 3.2)
 
 
 
@@ -168,6 +154,7 @@ if (nrow(data_lab) > 0) {
 
 
 ## · Sample lists ----
+#    (Only for other partners, not INBO)
 
 source("./src/functions/get_sample_lists.R")
 samples <- get_sample_lists()
@@ -191,7 +178,8 @@ source("./src/functions/add_ids_simple.R")
 # [name dataframe] %>%
 #       add_ids_simple(orig_harm = FALSE)
 
-
+# If you want to see the samples from the freezer sample list:
+# freezer <- read_sheet(as_id(id_freezer))
 
 
 
@@ -204,8 +192,6 @@ layers <- c("OL", "OFH", "M01", "M13", "M36", "M61")
 
 
 ## 3.1. Data pretreatment disturbed ----
-
-glimpse(dist)
 
 columns_to_check <- c("mass_recipient",
                       "mass_before_gross",
@@ -251,13 +237,10 @@ dist_harm <- dist_harm %>%
       # Add any objects that were removed before first weighing and drying
       # of sample pretreatment central lab. This way, any objects that do not
       # belong in OFH are included in the mass ratio after versus before
-      # drying.
+      # drying (in the assumption that this fraction is representative for
+      # the whole layer).
       mass_before_gross + coalesce(mass_objects, 0) - mass_recipient,
     mass_after = mass_after_gross - mass_recipient)
-
-glimpse(dist_harm)
-
-
 
 
 
@@ -313,7 +296,7 @@ dist_masses <-
         mass_dry_twigs_small = NA_real_),
     # 2. From INBO
     dist_harm %>%
-      # Part 1 INBO: Create OL subtotals
+      # 2. Part 1 INBO: Create OL subtotals
       filter(code_layer == "OL") %>%
       mutate(
         sample_id_simple = gsub("_OL_.*$", "_OL_flammability",
@@ -348,7 +331,7 @@ dist_masses <-
              code_layer, mass_before, mass_after,
              mass_dry_leaves, mass_dry_twigs_medium,
              mass_dry_twigs_small) %>%
-      # Part 2 INBO: Bind with non-OL rows
+      # 2. Part 2 INBO: Bind with non-OL rows
       bind_rows(
         dist_harm %>%
           filter(institute_sampling == "INBO") %>%
@@ -362,7 +345,7 @@ dist_masses <-
             mass_dry_twigs_small = NA_real_))
     ) %>%
   full_join(
-    # Part 1 other partners: forest floor data local lab
+    # 3. Local lab data other partners
     df_local_lab %>%
       mutate(
         mass_dry_partner =
@@ -388,11 +371,18 @@ dist_masses <-
                                     mass_dry_twigs_small_ol)) %>%
   # Calculate percentage leaves, twigs medium, twigs small for OL
   mutate(
-    perc_dry_leaves = round(1E2 * mass_dry_leaves / mass_dry_partner, 1),
-    perc_dry_twigs_medium =
-      round(1E2 * mass_dry_twigs_medium / mass_dry_partner, 1),
-    perc_dry_twigs_small =
-      round(1E2 * mass_dry_twigs_small / mass_dry_partner, 1)
+    perc_dry_leaves = case_when(
+      grepl("^INBO__", plot_code_simple) ~
+        round(1E2 * mass_dry_leaves / mass_after, 1),
+      TRUE ~ round(1E2 * mass_dry_leaves / mass_dry_partner, 1)),
+    perc_dry_twigs_medium = case_when(
+      grepl("^INBO__", plot_code_simple) ~
+        round(1E2 * mass_dry_twigs_medium / mass_after, 1),
+      TRUE ~ round(1E2 * mass_dry_twigs_medium / mass_dry_partner, 1)),
+    perc_dry_twigs_small = case_when(
+      grepl("^INBO__", plot_code_simple) ~
+        round(1E2 * mass_dry_twigs_small / mass_after, 1),
+      TRUE ~ round(1E2 * mass_dry_twigs_small / mass_dry_partner, 1))
     ) %>%
   select(-mass_dry_leaves_ol, -mass_dry_twigs_medium_ol,
          -mass_dry_twigs_small_ol)
@@ -403,13 +393,10 @@ dist_masses <-
 
 df_layers <- df_layers_out %>%
   left_join(dist_masses %>%
-              # We need to use the masses of the original sample
-              # because we do not have the mass across five sampling points
-              # of the newest sample, while the fresh subsample must have had
-              # a different moisture content than the original.
-              # In other words, we only use the new sample (b)
-              # for the lab analyses.
-              filter(sample_id_simple != "LWF__65_a__NA__OFH_carbon_b"),
+              # We need to use the masses of the newest sample ("OFH_carbon_b")
+              # since it is more reliable (living roots were removed more
+              # meticulously).
+              filter(sample_id_simple != "LWF__65_a__NA__OFH_carbon"),
             by = join_by("plot_code_simple", "code_layer")) %>%
   relocate(mass_dry_partner, mass_before, mass_after,
            .after = dist) %>%
@@ -439,10 +426,9 @@ df_layers <- df_layers_out %>%
 # - Calculate dry areal mass based on tamass, surface_frame, count_ff_frames
 #   and the moisture content
 
-# However, there seem to be some exceptions (typically different from
-# partner to partner):
-# - It seems so far that some of the samples are not yet dry when they
-#   arrive at the central lab. This was visible for the UNIUD and BFNP
+# However, there seem to be some exceptions (typically per partner):
+# - It seems so far that some of the samples were not yet dry when they
+#   arrived at the central lab. This was visible for the UNIUD and BFNP
 #   samples upon arrival. Also, during sample pretreatment at the central lab,
 #   we sometimes observed inconsistencies with the definition of OFH, sometimes
 #   not possible to solve (e.g., too much mineral matrix in OFH), and sometimes
@@ -522,9 +508,9 @@ if (apply_corrections) {
         TRUE ~ mass_before
       ),
       mass_dry_partner = case_when(
-        # Probably a typo by the partner (originally 720.9),
+        # Typo as confirmed by the partner (originally 720.9),
         plot_code_simple == "VUK__38__Novorecky mocal__NA" &
-          code_layer == "OFH" ~ 72.09,
+          code_layer == "OFH" ~ 72.9,
         TRUE ~ mass_dry_partner)
     ) %>%
     # Remove inconsistent forest floor masses
@@ -579,9 +565,12 @@ if (apply_corrections) {
       # This is the case for "NWFVA__03-011__Walbecker Warte__NA",
       # "UL__8__Krokar__NA", "UL__9__Gorjanci__NA",
       # "DISAFA - UNITO__9__Paneveggio__NA", "WSL__25__Seeliwald__NA"
-      # TO DO: potentially flag this with partners - especially if mass of
+      # Some feedback from partners (for cases for which mass of
       # sample in sample list upon shipment ("samples") was reported and
-      # points out that there is an issue in mass_dry_partner
+      # points out that there is an issue in mass_dry_partner):
+      # "UL__9__Gorjanci__NA": part of sample accidentally lost before shipment
+      # (this confirms that our equation for dry_to_moist already solves
+      #  the mismatch)
     ) %>%
     select(-any_of(c(
       "before_to_dry_partner", "after_to_before",
@@ -690,59 +679,244 @@ df_layers <- df_layers %>%
   ungroup() %>%
   mutate(
     dry_to_moist = round(dry_to_moist_local * dry_to_moist_central , 3),
-    # t ha-1
+    # kg m-2 (1 kg m-2 = 10 t ha-1)
     areal_mass = ifelse(
       code_layer %in% c("OL", "OFH"),
       round(
-      tamass * 1E-6 * # tonnes field-moist material over x sampling frame areas
+      tamass * 1E-3 * # kg field-moist material over x sampling frame areas
         dry_to_moist / # g dry material / g field-moist material
-        (surface_frame * count_ff_frames * 1E-4), 2), # ha covered by all frames
+        (surface_frame * count_ff_frames), 2), # m2 covered by all frames
       NA_real_),
-    # We can also calculate the minimum and maximum, based on the variation
+    # Minimum and maximum of areal mass, based on the variation
     # between sampling points
-    areal_mass_min = ifelse(
-      code_layer %in% c("OL", "OFH"),
-      round(
-        tamass_min * 1E-6 * # This is for one sampling point (one frame)
-        dry_to_moist /
-        (surface_frame * 1E-4), 2), # ha covered by one frames
-      NA_real_),
-    areal_mass_max = ifelse(
-      code_layer %in% c("OL", "OFH"),
-      round(
-      tamass_max * 1E-6 * # This is for one sampling point (one frame)
-        dry_to_moist /
-        (surface_frame * 1E-4), 2), # ha covered by one frames
-      NA_real_),
+    across(
+      c(tamass_min, tamass_max),
+      ~ ifelse(
+        code_layer %in% c("OL", "OFH"),
+        round(
+          .x * 1E-3 * # kg - This is for one sampling point (one frame)
+            dry_to_moist /
+            surface_frame, # m2 covered by one frame
+          2
+        ),
+        NA_real_
+      ),
+      .names = "areal_mass_{sub('tamass_', '', .col)}"
+    ),
     # Add bulk_density based on areal mass (kg m-3)
     # (for Seeliwald, where original so-called OL and OFH layers become
     #  below-ground)
-    bulk_density_dist = ifelse(
-      !is.na(areal_mass),
-      round(
-        areal_mass * # t ha-1 = 1000 kg 10 000 m-2 (i.e., 1 t ha-1 = 0.1 kg m-2)
-          1E-1 /
-          (thickness * 1E-2), # thickness in cm to m
-        2),
-      NA_real_),
-    bulk_density_dist_min = ifelse(
-      !is.na(areal_mass_min),
-      round(
-        areal_mass_min * 1E-1 /
-          (thickness * 1E-2),
-        2),
-      NA_real_),
-    bulk_density_dist_max = ifelse(
-      !is.na(areal_mass_max),
-      round(
-        areal_mass_max * 1E-1 /
-          (thickness * 1E-2),
-        2),
-      NA_real_)
+    across(
+      c(areal_mass,
+        areal_mass_min,
+        areal_mass_max),
+      ~ if_else(
+        !is.na(.x),
+        round(
+          .x / # kg m-2
+            (thickness * 1E-2), # thickness in cm to m
+          2
+        ),
+        NA_real_
+      ),
+      .names = "bulk_density_dist{sub('areal_mass', '', .col)}"
+    )
     )
 
 
 df_layers_ff <- df_layers
+
+
+
+
+
+
+
+
+
+if (create_inconsistency_report) {
+
+  ### INCONSISTENCY 13 ----
+
+  rule <- paste0("Mass of subsample after drying in local lab is higher than ",
+                 "mass of field-moist subsample (after mixing).")
+
+  rule_id <- "13"
+
+  source("./src/functions/get_attribute_catalogue_app.R")
+  attribute_catalogue <- get_attribute_catalogue_app()
+
+  # Dataframe to collect problems
+  inconsistencies <- data.frame(
+    source = character(0),
+    team = character(0),
+    plot_code_app = character(0),
+    res_id_inst = character(0),
+    globalid = character(0),
+    parameter = character(0),
+    sample_code = character(0),
+    value = character(0), # Must be character always!
+    inconsistency_reason = character(0),
+    unique_inconsistency = logical(0),
+    rule_id = character(0))
+
+
+
+  # Records with a problem
+
+  recs_problem <- df_layers %>%
+    filter(code_layer %in% c("OL", "OFH")) %>%
+    filter(mass_dry_partner > dist)
+
+  inc <- recs_problem %>%
+    mutate(
+      inconsistency_reason = rule,
+      dist = as.character(dist),
+      mass_dry_partner = as.character(mass_dry_partner),
+      mass_dry_leaves = as.character(mass_dry_leaves),
+      mass_dry_twigs_medium = as.character(mass_dry_twigs_medium),
+      mass_dry_twigs_small = as.character(mass_dry_twigs_small)) %>%
+    # pivot longer to get one row per parameter
+    pivot_longer(
+      cols = c(dist, mass_dry_partner, mass_dry_leaves, mass_dry_twigs_medium,
+               mass_dry_twigs_small),
+      names_to = "parameter",
+      values_to = "value"
+    ) %>%
+    filter(
+      !(code_layer == "OL" & parameter == "mass_dry_partner")
+    ) %>%
+    filter(
+      !(code_layer == "OFH" & grepl("leaves|twigs", parameter))
+    ) %>%
+    mutate(
+      parameter = case_when(
+        parameter %in% c("dist") & code_layer == "OL" ~
+          paste0(code_layer, "_flamm"),
+        parameter %in% c("dist") & code_layer == "OFH" ~
+          paste0(code_layer, "_carbon"),
+        TRUE ~ parameter)) %>%
+    left_join(attribute_catalogue %>%
+                rename(parameter_description = descr,
+                       parameter_unit = unit),
+              by = join_by("parameter" == "column_name")) %>%
+    mutate(
+      parameter_description = case_when(
+        parameter == "mass_dry_partner" ~
+          paste0("Net mass determined after drying in the local lab of OFH ",
+                 "subsample taken from the field"),
+        parameter == "mass_dry_leaves" ~
+          paste0("Net mass determined after drying in the local lab of ",
+                 "'leaves' in OL subsample taken from the field"),
+        parameter == "mass_dry_twigs_medium" ~
+          paste0("Net mass determined after drying in the local lab of ",
+                 "'twigs-medium' in OL subsample taken from the field"),
+        parameter == "mass_dry_twigs_small" ~
+          paste0("Net mass determined after drying in the local lab of ",
+                 "'twigs-small' in OL subsample taken from the field"),
+        TRUE ~ parameter_description),
+      parameter_unit = "g") %>%
+    relocate(parameter_description, parameter_unit, .after = parameter) %>%
+    mutate(
+      # mark unique_inconsistency = TRUE only for the first parameter per record
+      unique_inconsistency = (grepl("_flamm|_carbon", parameter)),
+      source = as.character(ifelse(grepl("_flamm|_carbon", parameter),
+                                   "Survey123 app",
+                                   "Forest floor data (local lab)")),
+      team = team_harmonized,
+      plot_code_app = code,
+      res_id_inst = res_id_harmonized,
+      sample_code = code_layer,
+      rule_id = rule_id) %>%
+    mutate(value = as.character(value)) %>%
+    select(source, team, plot_code_app, res_id_inst, globalid, sample_code,
+           parameter, parameter_description, parameter_unit, value,
+           inconsistency_reason, unique_inconsistency, rule_id)
+
+  inconsistencies <- bind_rows(
+    inconsistencies,
+    inc)
+
+
+
+
+  ### INCONSISTENCY 14 ----
+
+  rule <- paste0("Mass recorded after drying in local lab must roughly ",
+                 "correspond with mass of OFH sample received by central lab")
+
+  rule_id <- "14"
+
+
+  # Records with a problem
+
+  before_to_dry_partner_plaus <- c(0.9, 1.1)
+  after_to_before_plaus <- c(0.8, 1.01)
+
+  recs_problem <- df_layers %>%
+    filter(code_layer == "OFH") %>%
+    mutate(
+      before_to_dry_partner = case_when(
+        institute_sampling == "INBO" ~ mass_before / dist,
+        TRUE ~ mass_before / mass_dry_partner),
+      after_to_before = mass_after / mass_before,
+      b2dp_flag = (wp == "WP2" &
+                     (!is.na(mass_dry_partner) | institute_sampling == "INBO") &
+                     (before_to_dry_partner < before_to_dry_partner_plaus[1] |
+                        before_to_dry_partner >
+                        before_to_dry_partner_plaus[2])),
+      a2b_flag = (wp == "WP2" &
+                    institute_sampling != "INBO" &
+                    (after_to_before < after_to_before_plaus[1] |
+                       after_to_before > after_to_before_plaus[2]))
+    ) %>%
+    # Inconsistency potentially caused by partner:
+    # mass_before is quite different from mass_dry partner but
+    # consistent with mass_after (i.e., b2dp_flag & !a2b_flag)
+    # This is the case for "NWFVA__03-011__Walbecker Warte__NA",
+    # "UL__8__Krokar__NA", "UL__9__Gorjanci__NA",
+    # "DISAFA - UNITO__9__Paneveggio__NA", "WSL__25__Seeliwald__NA"
+    filter(b2dp_flag & !a2b_flag)
+
+  inc <- recs_problem %>%
+    mutate(
+      inconsistency_reason =  paste0(rule,
+                                     " [net: ", mass_before, " g]"),
+      mass_dry_partner = as.character(mass_dry_partner)) %>%
+    # pivot longer to get one row per parameter
+    pivot_longer(
+      cols = c(mass_dry_partner),
+      names_to = "parameter",
+      values_to = "value"
+    ) %>%
+    mutate(
+      parameter_description =
+          paste0("Net mass determined after drying in the local lab of OFH ",
+                 "subsample taken from the field"),
+      parameter_unit = "g") %>%
+    relocate(parameter_description, parameter_unit, .after = parameter) %>%
+    mutate(
+      # mark unique_inconsistency = TRUE only for the first parameter per record
+      unique_inconsistency = TRUE,
+      source = "Forest floor data (local lab)",
+      team = team_harmonized,
+      plot_code_app = code,
+      res_id_inst = res_id_harmonized,
+      sample_code = code_layer,
+      rule_id = rule_id) %>%
+    mutate(value = as.character(value)) %>%
+    select(source, team, plot_code_app, res_id_inst, globalid, sample_code,
+           parameter, parameter_description, parameter_unit, value,
+           inconsistency_reason, unique_inconsistency, rule_id)
+
+  inconsistencies <- bind_rows(
+    inconsistencies,
+    inc)
+
+} # End of "if create_inconsistency_report"
+
+
+
 
 
 
@@ -1059,7 +1233,42 @@ if (apply_corrections) {
       vol_cf = case_when(
         plot_code_simple == "WSL__53__Murgtal__NA" & code_layer == "M61" ~
           NA_real_,
-        TRUE ~ vol_cf))
+        TRUE ~ vol_cf),
+      # Special case for "BGD-NP__1__Berchtesgaden National Park__F048" M01,
+      # for which the bulk density back-up sample was accidentally sent
+      # to the central lab too, and taken together with the 'real' undisturbed
+      # sample representing four rings. As the number of rings in the back-up
+      # sample is unknown, we will multiply the masses recorded in the central
+      # lab by (494 - 11.86) / (494 - 11.86 + 172 - 11.86), with
+      # 494: dry mass (g, including bags) of 'real' undisturbed sample
+      # 172: dry mass (g, including bags) of back-up sample
+      # 11.86: mass (g) of bags per sample
+      mass_cf = case_when(
+        plot_code_simple == "BGD-NP__1__Berchtesgaden National Park__F048" &
+          code_layer == "M01" ~
+          (494 - 11.86) / (494 - 11.86 + 172 - 11.86) * mass_cf,
+        TRUE ~ mass_cf),
+      mass_cf_for_vol = case_when(
+        plot_code_simple == "BGD-NP__1__Berchtesgaden National Park__F048" &
+          code_layer == "M01" ~
+          (494 - 11.86) / (494 - 11.86 + 172 - 11.86) * mass_cf_for_vol,
+        TRUE ~ mass_cf_for_vol),
+      vol_cf = case_when(
+        plot_code_simple == "BGD-NP__1__Berchtesgaden National Park__F048" &
+          code_layer == "M01" ~
+          (494 - 11.86) / (494 - 11.86 + 172 - 11.86) * vol_cf,
+        TRUE ~ vol_cf),
+      mass_before = case_when(
+        plot_code_simple == "BGD-NP__1__Berchtesgaden National Park__F048" &
+          code_layer == "M01" ~
+          (494 - 11.86) / (494 - 11.86 + 172 - 11.86) * mass_before,
+        TRUE ~ mass_before),
+      mass_after = case_when(
+        plot_code_simple == "BGD-NP__1__Berchtesgaden National Park__F048" &
+          code_layer == "M01" ~
+          (494 - 11.86) / (494 - 11.86 + 172 - 11.86) * mass_after,
+        TRUE ~ mass_after)
+      )
 
 } # End of "if apply_corrections"
 
@@ -1107,8 +1316,7 @@ if (apply_corrections) {
         is.na(vol_cf) & !is.na(mass_cf),
         round(1E3 * mass_cf / particle_density),
         vol_cf)
-    ) %>%
-    select(-any_of(c("pd_plot")))
+    )
 
 
 
@@ -1196,7 +1404,7 @@ if (apply_corrections) {
                       (after_to_before < after_to_before_plaus[1] |
                          after_to_before > after_to_before_plaus[2])),
         # Scenario 1:
-        # if mass_before is quite different from both bulk_den (but plausible
+        # if mass_before is quite different from bulk_den (but plausible
         # in comparison with mass_after), assume that both mass_before and
         # mass_after are implausible (this is manually verified).
         # Action: replace mass_before and mass_after by NA
@@ -1209,16 +1417,28 @@ if (apply_corrections) {
           ~ ifelse(b2fm_flag, NA_real_, .)
         ),
         # Scenario 2:
-        # if mass_after is quite different from mass_before, assume that
+        # if mass_after is quite different from mass_before (but mass_before
+        # is plausible in comparison with bulk_den), assume that
         # both mass_before and mass_after are implausible (this is manually
         # verified).
         # Action: replace mass_before and mass_after by NA
+        # (replacement of mass_after is most important, but do the same with
+        #  ass_before to avoid any confusion)
         # This is the case for
         #  "NPS__21__Spicnik__2" M13
         #  "NWFVA__03-026__Landwehr__NA" M13
         across(
           c(mass_before, mass_after),
           ~ ifelse(a2b_flag, NA_real_, .))
+        # Scenario 3:
+        # if mass_before and mass_after are both quite different from bulk_den
+        # (b2fm_flag & !a2b_flag), but plausible in comparison with count_rings,
+        # could be a mistake from the field mass (bulk_den)
+        # No need to take any action.
+        # This is the case for:
+        # Wijnendale M13
+        # IP_10 M36
+        # BGD-NP F048 M01
       ) %>%
       select(-any_of(c(
         "before_to_field_moist", "after_to_before",
@@ -1240,8 +1460,6 @@ if (apply_corrections) {
         !is.na(dry_to_moist) ~ dry_to_moist,
         # Below-ground undisturbed - default
         !is.na(mass_after) ~ pmin(mass_after / bulk_den, 1),
-        # # Below-ground undisturbed - for records with mass_after = NA
-        # is.na(mass_after) ~ # TO BE FILLED HERE
         TRUE ~ NA_real_
       )) %>%
     # Gap-fill dry_to_moist for records with missing mass_after
@@ -1265,7 +1483,7 @@ if (apply_corrections) {
     mutate(
       dry_to_moist = case_when(
         !is.na(dry_to_moist) ~ dry_to_moist,
-        # Gap-fill dry_to_moist for undisturbed samples with missing mas_after
+        # Gap-fill dry_to_moist for undisturbed samples with missing mass_after
         grepl("^M", code_layer) &
           bulk_den_check == "Sample collected" &
           is.na(mass_after) ~
@@ -1324,7 +1542,10 @@ if (apply_corrections) {
     mutate(bd_unc = list(add_bd_uncertainty(bulk_density))) %>%
     unnest_wider(bd_unc) %>%
     rename(mass_before_undist = mass_before,
-           mass_after_undist = mass_after) %>%
+           mass_after_undist = mass_after,
+           bulk_density_undist = bulk_density,
+           bulk_density_undist_min = bulk_density_min,
+           bulk_density_undist_max = bulk_density_max) %>%
     mutate(
       mass_before = case_when(
         # Use most important masses only:
@@ -1336,6 +1557,12 @@ if (apply_corrections) {
         grepl("^M", code_layer) ~ mass_after_undist,
         TRUE ~ mass_after_dist
       ),
+      bulk_density = coalesce(bulk_density_undist,
+                              bulk_density_dist),
+      bulk_density_min = coalesce(bulk_density_undist_min,
+                                  bulk_density_dist_min),
+      bulk_density_max = coalesce(bulk_density_undist_max,
+                                  bulk_density_dist_max),
       # Calculate coarse_fragment_vol_ring
       # (1 mL = 1 cm3)
       coarse_fragment_vol_ring = case_when(
@@ -1344,132 +1571,226 @@ if (apply_corrections) {
         # vol_cf corresponds with the volume of the entire ring
         plot_code_simple == "WSL__53__Murgtal__NA" & code_layer == "M61" ~
           1E2 * vol_cf / (1 * vol_ring),
+        # vol % coarse fragments is known to be unreliable for:
+        # - "NWFVA__03-060__Meinsberg__NA" M36 (as reported by partner)
+        plot_code_simple == "NWFVA__03-060__Meinsberg__NA" &
+          code_layer == "M36" ~ NA_real_,
+        # vol % coarse fragments is known to be unreliable for:
+        # - undisturbed samples taken using rings smaller than Kopecky (100 cm³)
+        #   (i.e., NWFVA used small rings of 5 cm³ when too stony for Kopecky)
+        vol_ring < 100 ~ NA_real_,
         # Default calculation
-        TRUE ~ 1E2 * vol_cf / vol_total
-      )
+        TRUE ~ 1E2 * vol_cf / vol_total)
     ) %>%
     mutate(
       # Summarise coarse fragments
       # ---
       P1_coaf_2_50mm = P1_coaf_2mm - P1_coaf_50mm,
-      coarse_fragment_2_50mm_vol =
+      coarse_fragment_2_50mm_vol = ifelse(
+        grepl("^M", code_layer),
         rowMeans(cbind(coarse_fragment_vol_ring, P1_coaf_2_50mm), na.rm = TRUE),
+        NA_real_
+      ),
       coarse_fragment_vol = coarse_fragment_2_50mm_vol + P1_coaf_50mm
+    ) # %>%
+    # rowwise() %>%
+    # # TO DO: update based on spatial CF data by VUK
+    # mutate(cf_unc = list(add_cf_uncertainty(P1_coaf_2mm,
+    #                                         P1_coaf_50mm,
+    #                                         coarse_fragment_vol_ring))) %>%
+    # unnest_wider(cf_unc) #%>%
+  # TO DO: round CF
+
+
+
+
+
+
+
+
+## 4.3. Calculate vol_perc_fine_earth per plot ----
+
+df_plot_fe <- df_layers %>%
+    filter(wp == "WP2") %>%
+    mutate(
+      thickness_bedrock = ifelse(
+        # Below-ground layers above or containing lithic contact
+        !is.na(depth_bottom_bedrock) & depth_top >= 0,
+        depth_bottom_bedrock - depth_top,
+        NA_real_),
+      layer_vol_fine_earth = ifelse(
+        !is.na(thickness_bedrock),
+        thickness_bedrock * (1 - 1E-2 * coarse_fragment_vol),
+        NA_real_)
+    ) %>%
+    group_by(plot_code_simple) %>%
+    reframe(
+      vol_fine_earth = ifelse(
+        any(!is.na(layer_vol_fine_earth)),
+        sum(layer_vol_fine_earth, na.rm = TRUE),
+        0)
+    ) %>%
+    mutate(
+      vol_perc_fine_earth = round(1E2 * (vol_fine_earth / 100))
+    ) %>%
+    select(-vol_fine_earth)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# 5. Prepare output datasets ----
+
+## 5.1. Compile inconsistencies ----
+
+### 5.1.1. Check coordinates ----
+
+if (create_inconsistency_report) {
+
+  ### INCONSISTENCY 15 ----
+
+  rule <- paste0("Reported coordinates (Survey123 app) should be within a ",
+                 "reasonable distance from coordinates in HIS metadata file.")
+
+  rule_id <- "15"
+
+
+  # Records with a problem
+
+  source("./src/functions/as_sf.R")
+
+  his_sf <- his %>%
+    rename_with(~ paste0(.x, "_dec"), c(latitude, longitude)) %>%
+    # Filter out "extra" plots without HIS coordinates
+    filter(!is.na(latitude_dec) & !is.na(longitude_dec)) %>%
+    as_sf %>%
+    rename_with(~ paste0(.x, "_his"), c(geometry,
+                                        latitude_dec, longitude_dec)) %>%
+    select(plot_code_simple, ends_with("_his"))
+
+  df_plot_sf <- df_plot %>%
+    filter(wp == "WP2") %>%
+    as_sf %>%
+    rename_with(~ paste0(.x, "_app"), c(geometry,
+                                        latitude_dec, longitude_dec)) %>%
+    select(plot_code_simple, ends_with("_app"))
+
+
+  # Join the two dataframes on plot_code_simple
+  df_coord <- his %>%
+    select(plot_code_simple) %>%
+    inner_join(
+      his_sf,
+      by = "plot_code_simple"
+    ) %>%
+    inner_join(
+      df_plot_sf,
+      by = "plot_code_simple"
     ) %>%
     rowwise() %>%
-    # TO DO: update based on spatial CF data by VUK
-    mutate(cf_unc = list(add_cf_uncertainty(P1_coaf_2mm,
-                                            P1_coaf_50mm,
-                                            coarse_fragment_vol_ring))) %>%
-    unnest_wider(cf_unc)
+    mutate(
+      distance_m =
+        round(as.numeric(st_distance(geometry_his, geometry_app)))
+    ) %>%
+    ungroup()
+
+  distance_plaus <- 20000 # m
+
+  recs_problem <- df_coord %>%
+    select(-contains("geometry")) %>%
+    filter(distance_m > distance_plaus)
+
+  inc <- recs_problem %>%
+    mutate(
+      inconsistency_reason = paste0(rule,
+                                    " [current distance: ",
+                                    distance_m, " m]")) %>%
+    mutate(across(everything(), as.character)) %>%
+    # pivot longer to get one row per parameter
+    pivot_longer(
+      cols = c("latitude_dec_his", "longitude_dec_his",
+               "latitude_dec_app", "longitude_dec_app"),
+      names_to = "parameter",
+      values_to = "value"
+    ) %>%
+    left_join(
+      df_plot %>%
+        select(-latitude_dec, -longitude_dec),
+      by = "plot_code_simple") %>%
+    mutate(
+      source = case_when(
+        grepl("_app$", parameter) ~ "Survey123 app",
+        grepl("_his$", parameter) ~ "HIS metadata table"),
+      parameter = case_when(
+        grepl("lat", parameter) ~ "latitude",
+        grepl("lon", parameter) ~ "longitude")) %>%
+    left_join(attribute_catalogue %>%
+                rename(parameter_description = descr,
+                       parameter_unit = unit),
+              by = join_by("parameter" == "column_name")) %>%
+    mutate(
+      parameter_description =
+        paste0(parameter_description, " (according to ", source, ")"),
+      parameter_unit = "g") %>%
+    relocate(parameter_description, parameter_unit, .after = parameter) %>%
+    mutate(
+      # mark unique_inconsistency = TRUE only for the first parameter per record
+      unique_inconsistency =
+        (parameter == "latitude" & source == "HIS metadata table"),
+      team = team_harmonized,
+      plot_code_app = code,
+      res_id_inst = res_id_harmonized,
+      sample_code = NA_character_,
+      rule_id = rule_id) %>%
+    mutate(value = as.character(value)) %>%
+    select(source, team, plot_code_app, res_id_inst, globalid, sample_code,
+           parameter, parameter_description, parameter_unit, value,
+           inconsistency_reason, unique_inconsistency, rule_id)
+
+  inconsistencies <- bind_rows(
+    inconsistencies,
+    inc)
+
+} # End of "if create_inconsistency_report"
 
 
 
-# TO DO:
-# Keep in mind that field mass (100) of BD-M01 by
-# "BGD-NP__1__Berchtesgaden National Park__F066" was possibly a mistake
-# (maybe not).
-
-# TO DO:
-# Filter by bulk density mass (field) > 0. Records for which this mass equals 0
-# should be absent in the sample list.
-
-# TO DO:
-# Keep in mind that lab coarse fragments content of M36 for
-# "NWFVA__03-060__Meinsberg__NA" is not realistic (as reported by partner)
-
-# TO DO:
-# "WSL__23__Boedmerenwald__NA": Keep in mind that below-ground samples were
-# absent due to the presence of bedrock below OFH. However, the reported
-# bedrock depth was 7.5 cm → Add this thickness to OFH? (request feedback WSL)
-
-# TO DO: add "vol_perc_fine_earth"
-
-  # TO DO: special approach for Seeliwald!
-  # (bulk density based on areal mass peat layers)
 
 
 
+### 5.1.2. Compile all inconsistency reports ----
 
-
-
-
-
-
-
-
-# 5. Compile and tidy pre-processed data ----
-
-# Remove unnecessary columns + Add lab data
-
-# TO DO: in some cases, it will be necessary to LOCF (or spline?) the analyses
-# from the layer above, when no samples were sent to the lab for the lowest
-# layer (e.g., M36 of BGD-NP__1__Berchtesgaden National Park__F048)
-# Splines (?) for layer with absent disturbed and undisturbed samples,
-#  e.g., "DISAFA - UNITO__14__Alpe Cusogna__NA" M61
-
-# TO DO (WBL dist + results RF analytical lab):
-# "NWFVA__06-025__Kinzigaue__b": four disturbed below-ground samples contained
-# no indication of depth. During lab pretreatment, they were randomly allocated
-# to a certain depth, but this needs to be corrected - probably best assuming
-# a decreasing SOC with increasing depth...
-
-# TO DO OFH samples of VUK VUK__1__Zofin__b and VUK__1__Zofin__c were also
-# switched at the central lab.
-
-# In the end, you can make the dataframe(s) a bit more neat. You could
-# make one dataframe with metadata per plot (e.g., WRB, slope, weather...)
-# (like df_plot at this point) and one with data per depth layer.
-# Several columns (e.g. those that were used to double-check other values
-# are not needed anymore). Basically, you need columns to identify the
-# plot and layer, the final calculated values and their uncertainties.
-# (similar to "layer 1" of ICP F)
-
-# TO DO: metadata (weather) for eDNA are different for three NW-FVA plots
-# (resampling due to loss eDNA samples)
-
-# Do we report those original masses (in addition to relative percentages)?
-# select(-mass_dry_leaves, -mass_dry_twigs_medium, -mass_dry_twigs_small)
-
-# TO DO:
-# Bulk density using pedotransfer for plots for which no undisturbed samples
-# could be taken, e.g., "BGD-NP__1__Berchtesgaden National Park__F016"
-
-
-
-# 6. Compile inconsistencies ----
-
-
-## 6.1. Compile ----
+if (create_inconsistency_report) {
 
 reports <- list(
-  inconsistencies_app_long = res_app_long$inconsistencies,
-  inconsistencies_app_numeric = res_app_numeric$inconsistencies,
-  inconsistencies_lab_numeric = res_lab_numeric$inconsistencies
-) %>%
-  # Remove NULL (for functions for which no report is created)
-  purrr::compact()
-
-inc_report <- bind_rows(reports)
-
-# Now you automatically know which function produced which report.
-# inc_report <- bind_rows(reports, .id = "source")
-# inc_report <- bind_rows(
-#   purrr::map(results, "inconsistencies"),
-#   .id = "source")
-
-
-
-# So far, these are the implemented inconsistency checks, together with
-# the name of the inconsistency report in the Global Environment and the name
-# of the function in which they are generated:
-
-inc_reports <- c(
+  # ---
+  # Function: get_app_data()
+  # ---
   # INCONSISTENCY 1
   # "Data expected to be numeric should be numeric."
-  # get_app_data()
-  "inconsistencies_app_numeric",
-  "inconsistencies_local_lab_numeric",
+  inconsistencies_app_numeric = res_get_app_data$inconsistencies,
+  # ---
+  # Function: get_data_local_lab()
+  # ---
+  # INCONSISTENCY 1
+  # "Data expected to be numeric should be numeric."  #
+  inconsistencies_local_lab_numeric = res_get_data_local_lab$inconsistencies,
+  # ---
+  # Function: app_data_long()
+  # ---
   # INCONSISTENCY 2
   # "Forest floor mass should be plausible in comparison with thickness
   #  and surface area frame"
@@ -1511,65 +1832,37 @@ inc_reports <- c(
   #  fine earth was present. This may reflect spatial variation. The plot-
   #  representative coarse fragment content will be capped at minimum 80 vol%
   #  so that this layer contributes to the carbon stock."
-  # app_data_long()
-  "inconsistencies_app_long"
-)
+  inconsistencies_app_long = res_app_data_long$inconsistencies,
+  # ---
+  # Script: preprocessing_and_quality_check.R
+  # ---
+  # INCONSISTENCY 13
+  # "Mass of subsample after drying in local lab is higher than mass of
+  #  field-moist subsample (after mixing)."
+  # INCONSISTENCY 14
+  # "Mass recorded after drying in local lab must roughly correspond with
+  #  mass of OFH sample received by central lab"
+  # INCONSISTENCY 15
+  # "Reported coordinates (Survey123 app) should be within a
+  #  reasonable distance from coordinates in HIS metadata file."
+  inconsistencies_preprocessing = inconsistencies
+) %>%
+  # Remove NULL (for functions for which no report is created)
+  purrr::compact()
 
 
-# Possible further inconsistency checks (can also just be visual)
-
-# - Check if OL and OFH mass local lab is lower than "dist" (mass subsample
-#   field)
-# - Check if OFH mass local lab roughly corresponds with mass_before central lab
-# - Check if OFH mass_after does not deviate too much from mass_before anymore
-#   for non-INBO partners
-# - Check if moisture contents of OL and OFH are plausible
-# - Check if lab masses bulk density samples are lower than field-moist bulk
-#   density masses
-# - Check if trends in lab masses of bulk density samples (after drying)
-#   correspond roughly with trends in masses from the field (i.e. similar
-#   moisture content)
-# - Check if lab masses of bulk density samples (before drying)
-#   correspond roughly with masses from the field
-# - Check if coarse fragments reported in 2-50 mm class in the field
-#   correspond more or less with those from the central lab
-# - Check if the undisturbed moisture contents are more or less making sense
-# - vol_ring and surface_frame should be > 0
-# - Compare sample list with app
-# - check distance from HIS metadata table coordinates
-# - coordinates should not be 0
-
-# (TO DO (PIR): if surface_frame > 1: divide by 1E3)
-
-# TO DO (PIR): compare mass_dry_partner with dist
-# (TO DO (PIR): compare mass_dry_partner with mass_before for potential mismatch
-# (note that it is not problematic (we use mass_dry_partner for moisture
-# content) but just in case there is a problem with mass_dry_partner))
-
-# TO DO (PIR): calculating areal masses: check if tamass > dist!
-# (also check edna1 and edna2 - e.g., for LWF)
-# What is more reliable: dist or tamass?
-# Use dist if difference less than 5 %? (e.g., Haras)
-
-
-
-
-
-
-
-
-
-# Compile all inconsistency reports from the Global Environment
-
-# Check if all reports exist in the Global environment
-# (should be if you ran all above-mentioned functions)
-missing_reports <- inc_reports[!sapply(inc_reports, exists, envir = .GlobalEnv)]
-assertthat::assert_that(identical(missing_reports, character(0)))
 
 
 # Bind them together
-inc_report <- bind_rows(lapply(inc_reports, get, envir = .GlobalEnv)) %>%
+
+inc_report <- bind_rows(reports) %>%
   as_tibble %>%
+  # Remove WP3 inconsistencies
+  left_join(df_plot %>%
+              select(globalid, wp),
+            by = "globalid") %>%
+  filter(wp == "WP2") %>%
+  select(-wp) %>%
   rename(plot_code = plot_code_app) %>%
   mutate(
     # Institute that does the soil sampling
@@ -1581,7 +1874,7 @@ inc_report <- bind_rows(lapply(inc_reports, get, envir = .GlobalEnv)) %>%
       team == "FVA-BW" ~ "NWFVA",
       team == "INCDS" ~ "UNITBV",
       team %in% c("UNIUD/HSI", "UNIUD/HSI_EXTRA",
-                            "UNIUD_EXTRA") ~ "UNIUD",
+                  "UNIUD_EXTRA") ~ "UNIUD",
       team %in% c("URK", "WULS") ~ "IBL",
       team %in% c("HUN-REN Centre for Ecological Research/VUKOZ(VUK)",
                   "VUKOZ(VUK)") ~
@@ -1599,9 +1892,15 @@ inc_report <- bind_rows(lapply(inc_reports, get, envir = .GlobalEnv)) %>%
 # You can link the inconsistencies with the app records using
 # globalid (without curly brackets and lowercase)
 
+} # End of "if create_inconsistency_report"
 
 
-## 6.2. Export ----
+
+
+
+### 5.1.3. Export ----
+
+if (create_inconsistency_report) {
 
 dir <- paste0("./output/partner_inconsistencies/",
               as.character(format(Sys.Date(), format = "%Y%m%d")), "/")
@@ -1643,7 +1942,7 @@ for (i in seq_along(partners_inc)) {
 
   freezePane(wb, 1, firstActiveRow = 2, firstActiveCol = 1)
   # writeData(wb, 2, xxx) # This should be some table with description of
-                          # the columns in inc_report
+  # the columns in inc_report
 
   openxlsx::saveWorkbook(wb,
                          file =
@@ -1654,8 +1953,254 @@ for (i in seq_along(partners_inc)) {
 
 } # End of "for i in partners"
 
+} # End of "if create_inconsistency_report"
 
 
 
 
 
+
+
+
+
+
+## 5.2. Compile and tidy pre-processed soil physicochemical data ----
+
+# Remove unnecessary columns + Add lab data
+
+# TO DO: in some cases, it will be necessary to LOCF (or spline?) the analyses
+# from the layer above, when no samples were sent to the lab for the lowest
+# layer (e.g., M36 of BGD-NP__1__Berchtesgaden National Park__F048)
+# Splines (?) for layer with absent disturbed and undisturbed samples,
+#  e.g., "DISAFA - UNITO__14__Alpe Cusogna__NA" M61
+
+# TO DO (WBL dist + results RF analytical lab):
+# "NWFVA__06-025__Kinzigaue__b": four disturbed below-ground samples contained
+# no indication of depth. During lab pretreatment, they were randomly allocated
+# to a certain depth, but this needs to be corrected - probably best assuming
+# a decreasing SOC with increasing depth...
+# Also for 03-083 based on data?
+
+# Note:
+# LWF__65_a__Friedergries__NA OFH_carbon has been retaken during the second
+# sampling campaign by LWF, as the first sample contained a lot of roots
+# (which were removed before lab analysis)
+# That original sample is named "DE__LWF__65_a__NA__NA__OFH_carbon" in the
+# RF (V-25V006-04), while the new (better) sample is named
+# "DE__LWF__65_a__NA__NA__OFH_carbon_b" → better to proceed with these results
+
+# VUK__1__Zofin__b OFH and VUK__1__Zofin__c OFH are switched at central lab
+# INBO! (note: forest floor masses already adjusted in section 3.2)
+
+# In the end, you can make the dataframe(s) a bit more neat. You could
+# make one dataframe with metadata per plot (e.g., WRB, slope, weather...)
+# (like df_plot at this point) and one with data per depth layer.
+# Several columns (e.g. those that were used to double-check other values
+# are not needed anymore). Basically, you need columns to identify the
+# plot and layer, the final calculated values and their uncertainties.
+# (similar to "layer 1" of ICP F)
+
+# Do we report those original masses (in addition to relative percentages)?
+# select(-mass_dry_leaves, -mass_dry_twigs_medium, -mass_dry_twigs_small)
+
+# TO DO:
+# Bulk density using pedotransfer for plots for which no undisturbed samples
+# could be taken, e.g., "BGD-NP__1__Berchtesgaden National Park__F016"
+
+# TO DO: add TOC of HF layer Seeliwald
+
+
+
+
+
+
+
+
+### 5.2.1. Compile df_layers ----
+
+  # Arange and add lab data
+
+  df_layers <- df_layers %>%
+    # Filter for WP2
+    filter(wp == "WP2") %>%
+    # Create columns if missing
+    mutate(
+      coarse_fragment_vol_min =
+        if (!"coarse_fragment_vol_min" %in% names(.)) NA_real_
+      else coarse_fragment_vol_min,
+      coarse_fragment_vol_max =
+        if (!"coarse_fragment_vol_max" %in% names(.)) NA_real_
+      else coarse_fragment_vol_max,
+    ) %>%
+    rename(coarse_fragment_vol_p1 = P1_coaf_2mm,
+           coarse_fragment_vol_p1_50mm = P1_coaf_50mm) %>%
+    # Add composed_site_id
+    left_join(
+      df_plot %>%
+        select(plot_code_simple, composed_site_id),
+      by = "plot_code_simple") %>%
+    # Add lab data
+    left_join(
+      data_lab %>%
+        select(-any_of(c("institute_sampling", "sample_code", "sample_id"))),
+      by = join_by("plot_code_simple", "code_layer", "sample_id_simple")
+    )
+
+
+  cols_layers <- c(
+  )
+
+  # Which of those columns do not exist?
+  assertthat::assert_that(
+    identical(
+      cols_layers[which(!cols_layers %in% names(df_layers))],
+      character(0)))
+
+  # Ordered vector
+  cols_layers_ordered <- unlist(lapply(cols_layers, function(x) {
+    c(
+      x,
+      paste0(x, "_min"),
+      paste0(x, "_max"))
+  }))
+
+  # Keep only columns that actually exist in df_layers
+  cols_layers_ordered <- cols_layers_ordered[
+    cols_layers_ordered %in% names(df_layers)
+  ]
+
+  # Select columns in desired order
+  wp2_layer_data <- df_layers[, cols_layers_ordered]
+
+
+
+
+
+### 5.2.2. Compile df_plot ----
+
+  # Arange data
+
+  df_plot <- df_plot %>%
+    # Filter for WP2
+    filter(wp == "WP2") %>%
+    # Create columns if missing
+    mutate(
+      parent_material =
+        if (!"parent_material" %in% names(.)) NA_real_
+      else parent_material
+    ) %>%
+    left_join(
+      his %>%
+        rename(
+          eftc = his_eftc,
+          eft = eea_fortype,
+          tsa_derived = derived_tsa,
+          tsa_class = his_tsaclass) %>%
+        select(plot_code_simple, res_id_inst, reserve_name,
+               sub_id, plot_id, eftc, eft, his_soil_water, his_soil_nutrient,
+               tsa_derived, tsa_class, year_reserve, year_abandonment),
+      by = "plot_code_simple") %>%
+    # Add vol_perc_fine_earth
+    left_join(
+      df_plot_fe,
+      by = "plot_code_simple") %>%
+    # Add particle density
+    left_join(
+      undist_harm %>%
+        group_by(plot_code_simple) %>%
+        reframe(
+          particle_density = ifelse(
+            any(!is.na(pd_plot)),
+            round(mean(pd_plot, na.rm = TRUE)),
+            NA_real_)),
+      by = "plot_code_simple")
+
+
+cols_plot <- c(
+)
+
+
+# Which of those columns do not exist?
+assertthat::assert_that(
+  identical(
+    cols_plot[which(!cols_plot %in% names(df_plot))],
+    character(0)))
+
+# Ordered vector
+cols_plot_ordered <- unlist(lapply(cols_plot, function(x) {
+  c(
+    x,
+    paste0(x, "_min"),
+    paste0(x, "_max"))
+}))
+
+# Keep only columns that actually exist in df_layers
+cols_plot_ordered <- cols_plot_ordered[
+  cols_plot_ordered %in% names(df_plot)
+]
+
+# Select columns in desired order
+wp2_plot_data <- df_plot[, cols_plot_ordered]
+
+
+
+
+
+
+### 5.2.3. Milestone 12 ----
+
+# - Remove gap-filled data
+#   (bulk density based on pedotransfer, TOC based on HF mean for Seeliwald)
+# - Remove EXTRA sites
+# - Remove "min" and "max" columns?
+
+# layer data
+
+path_m12 <- "./output/project_requests/m12/"
+
+write.table(wp2_layer_data %>%
+              filter(!grepl("EXTRA", plot_code_simple)),
+            file = paste0(path_m12, "wp2_layer_data.csv"),
+            row.names = FALSE,
+            na = "",
+            sep = ";",
+            dec = ".")
+
+source("./src/functions/create_attribute_catalogue.R")
+create_attribute_catalogue(wp2_layer_data,
+                           path_to_save = paste0(path_m12, "wp2_layer_data_"))
+
+# plot data
+
+write.table(wp2_plot_data %>%
+              filter(!grepl("EXTRA", plot_code_simple)),
+            file = paste0(path_m12, "wp2_plot_data.csv"),
+            row.names = FALSE,
+            na = "",
+            sep = ";",
+            dec = ".")
+
+source("./src/functions/create_attribute_catalogue.R")
+create_attribute_catalogue(wp2_plot_data,
+                           path_to_save = paste0(path_m12, "wp2_plot_data_"))
+
+
+
+
+#
+# write.table(wp3_sites,
+#             file = "./data/wp3_sites.csv",
+#             row.names = FALSE,
+#             na = "",
+#             sep = ";",
+#             dec = ".")
+
+
+## 5.3. Compile data flammability analysis ----
+
+
+
+## 5.4. Compile metadata for eDNA ----
+
+  # TO DO: metadata (weather) for eDNA are different for three NW-FVA plots
+  # (resampling due to loss eDNA samples)
