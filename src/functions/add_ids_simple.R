@@ -125,9 +125,9 @@ add_ids_simple <- function(data_frame,
           grepl("WULS__1__", sample_id) ~ sample_id,
           grepl("^BE-INBO-", sample_id) ~
             str_replace(sample_id, "-[^-]+-(?=[^-]+$)", "-"),
-          TRUE ~ str_replace(sample_id,
-                             "^(.*)__[^_]+__(.+)$",
-                             "\\1__\\2")),
+          TRUE ~ str_split_fixed(sample_id, "__", 6) %>%
+            apply(1, \(x) paste(c(x[1:4], x[6]), collapse = "__"))
+          ),
         # 2. Now update the INBO records so that they have "__" as separator
         sample_id_simple = ifelse(
           str_starts(sample_id_simple, "BE-INBO"),
