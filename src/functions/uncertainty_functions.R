@@ -9,7 +9,8 @@ add_cf_uncertainty <- function(coaf_2mm,
   # Assert that coaf_2mm >= coaf_50mm
 
   assertthat::assert_that(
-    coaf_2mm >= coaf_50mm,
+    (is.na(coaf_2mm) & is.na(coaf_50mm)) |
+      (coaf_2mm >= coaf_50mm),
     msg =  paste0("Volumetric percentage of coarse fragments > 50 mm ",
                   "should not exceed that > 2 mm."))
 
@@ -58,8 +59,7 @@ add_cf_uncertainty <- function(coaf_2mm,
 
   # 2.1. Uncertainty > 50 mm
 
-  # In case the total amount of coarse fragments is low,
-  # we can assume the uncertainty is 0
+  # No uncertainty when clearly no large fragments
 
   coaf_50mm_unc <- ifelse(coaf_50mm == 0 &
                             coaf_2mm <= 5,
@@ -84,14 +84,23 @@ add_cf_uncertainty <- function(coaf_2mm,
   coarse_fragment_vol_ring_unc_range <-
     uncertainty_lab(coarse_fragment_vol_ring)
 
-  # 2.2.3. Combined
+  # 2.2.3. Combined 2-50 mm uncertainty
   # For 2-50 mm, take the widest bound around the field and lab uncertainty
   # ranges
 
-  unc_2_50mm_range <-
-    c(pmax(0, min(coaf_2_50mm_unc_range, coarse_fragment_vol_ring_unc_range)),
-      pmin(100, max(coaf_2_50mm_unc_range, coarse_fragment_vol_ring_unc_range)))
-
+  if (is.na(coarse_fragment_vol_ring)) {
+    # No lab data: use field uncertainty only
+    unc_2_50mm_range <- coaf_2_50mm_unc_range
+  } else {
+    # Lab data available: use widest bounds between field and lab ranges
+    # This ensures true value is covered even if one method is biased
+    unc_2_50mm_range <- c(
+      pmax(0, min(coaf_2_50mm_unc_range[1],
+                  coarse_fragment_vol_ring_unc_range[1])),
+      pmin(100, max(coaf_2_50mm_unc_range[2],
+                    coarse_fragment_vol_ring_unc_range[2]))
+    )
+  }
 
   # 3. Total uncertainty (>2 mm) ----
 
@@ -102,6 +111,7 @@ add_cf_uncertainty <- function(coaf_2mm,
   return(list(
     coarse_fragment_vol_min =
       round(pmax(0, coaf_50mm_unc_range[1] + unc_2_50mm_range[1]), 1),
+    # Cap to a maximum of 95 vol%
     coarse_fragment_vol_max =
       round(pmin(95, coaf_50mm_unc_range[2] + unc_2_50mm_range[2]), 1)
   ))
