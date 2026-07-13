@@ -687,6 +687,8 @@ data <-
       institute %in% c("UNIUD/HSI", "UNIUD/HSI_EXTRA",
                        "UNIUD_EXTRA") ~ "UNIUD",
       institute %in% c("URK", "WULS") ~ "IBL",
+      institute == "AlberIT - UNIRC" ~ "UNITO",
+      institute == "UL" ~ "SFI",
       TRUE ~ institute)) %>%
   # left_join(
   #   plots_belgium %>%

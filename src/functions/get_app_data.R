@@ -558,6 +558,8 @@ get_app_data <- function(path = NULL,
         team_harmonized %in% c("UNIUD/HSI", "UNIUD/HSI_EXTRA",
                                "UNIUD_EXTRA") ~ "UNIUD",
         team_harmonized %in% c("URK", "WULS") ~ "IBL",
+        team_harmonized == "AlberIT - UNIRC" ~ "UNITO",
+        team_harmonized == "UL" ~ "SFI",
         TRUE ~ team_harmonized)) %>%
     relocate(institute_sampling, .after = team_harmonized)
 

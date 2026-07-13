@@ -293,6 +293,8 @@ get_sample_lists <- function() {
         institute_harm %in% c("UNIUD/HSI", "UNIUD/HSI_EXTRA",
                               "UNIUD_EXTRA") ~ "UNIUD",
         institute_harm %in% c("URK", "WULS") ~ "IBL",
+        institute_harm == "AlberIT - UNIRC" ~ "UNITO",
+        institute_harm == "UL" ~ "SFI",
         TRUE ~ institute_harm))
 
 

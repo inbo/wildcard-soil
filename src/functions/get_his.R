@@ -414,6 +414,8 @@ get_his <- function(include_extra_plots = TRUE,
         institute %in% c("UNIUD/HSI", "UNIUD/HSI_EXTRA",
                          "UNIUD_EXTRA") ~ "UNIUD",
         institute %in% c("URK", "WULS") ~ "IBL",
+        institute == "AlberIT - UNIRC" ~ "UNITO",
+        institute == "UL" ~ "SFI",
         TRUE ~ institute),
       plot_code_simple = ifelse(
         composed_site_id == "WULS__1__Bialowieza National Park__NA",

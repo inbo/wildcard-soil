@@ -284,6 +284,8 @@ add_ids_simple <- function(data_frame,
           institute_harm %in% c("UNIUD/HSI", "UNIUD/HSI_EXTRA",
                                 "UNIUD_EXTRA") ~ "UNIUD",
           institute_harm %in% c("URK", "WULS") ~ "IBL",
+          institute_harm == "AlberIT - UNIRC" ~ "UNITO",
+          institute_harm == "UL" ~ "SFI",
           TRUE ~ institute_harm)) %>%
       select(-any_of(c("institute_harm", "res_id_inst_harm", "reserve_name",
                        "sub_id_harm")))
