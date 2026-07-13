@@ -159,7 +159,7 @@ summarise_forest_floor_masses <- function(df_sampling_points_ff,
     # Long format: one row per frame measurement per plot x layer
     # (areal_mass here is the per-frame value, not the plot mean)
     nest(.by = c(plot_code_simple, code_layer)) %>%
-    filter(map_int(data, nrow) >= 1) %>%  # safety check
+    filter(purrr::map_int(data, ~ nrow(.x)) >= 1) %>% # safety check
     mutate(
       # Concatenate plot code and layer for unique cache filenames
       model_id = paste0(plot_code_simple, "_", code_layer),
@@ -189,7 +189,7 @@ summarise_forest_floor_masses <- function(df_sampling_points_ff,
   mass_predictions <- bind_rows(
     # For n > 1
     mass_models %>%
-      filter(map_int(data, nrow) > 1) %>%
+      filter(purrr::map_int(data, ~ nrow(.x)) > 1) %>%
       mutate(pred = map(model, calc_predictions)) %>%
       select(-data, -model) %>%
       unnest(pred) %>%
@@ -220,7 +220,7 @@ summarise_forest_floor_masses <- function(df_sampling_points_ff,
     # Report the single observation as the point estimate, CI as NA.
     # Uncertainty for these plots should be flagged and handled separately
     mass_models %>%
-      filter(map_int(data, nrow) == 1) %>%
+      filter(purrr::map_int(data, ~ nrow(.x)) == 1) %>%
       mutate(
         .epred = NA_real_,
         .lower = NA_real_,
