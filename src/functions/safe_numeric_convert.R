@@ -46,7 +46,8 @@ safe_numeric_convert <- function(x,
     # Handle NULL, NA, empty string cases, and string "NULL"
     if (is.null(val) || is.na(val) ||
         (is.character(val) && nchar(trimws(val)) == 0) ||
-        trimws(toupper(val_char)) == "NULL") {
+        trimws(toupper(val_char)) == "NULL" ||
+        trimws(toupper(val_char)) == "NA") {
       return(NA_real_)
     }
 
