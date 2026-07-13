@@ -1,9 +1,17 @@
 
-get_lab_data <- function() {
+get_lab_data <- function(vec_rf) {
 
   # You must either be in office or have the INBO VPN switched on!
 
   cat("Make sure that the VPN of INBO is switched on.\n")
+
+  # Troubleshooting:
+  # If you get an error with a message like:
+     # ! ODBC failed with error 08S01 from [Microsoft][ODBC SQL Server Driver].
+     # ✖ Communicatiekoppelingsfout
+  # Try again to switch off and switch on the VPN,
+  # and rerun "connection <- lims_connect"
+
 
   # Check: https://github.com/inbo/inbolims
 
@@ -12,10 +20,7 @@ get_lab_data <- function() {
     connection <- lims_connect()
   }
 
-  # We need the rf_overview table
-  source("./src/functions/get_rf.R")
 
-  rfs <- unique(rf_overview$rf)
 
   # This way, you can see the samples for a certain RF:
   # lims_sample_information(connection, project = c("V-24V006-01"))
@@ -25,13 +30,17 @@ get_lab_data <- function() {
   loq_tc <- 0.5
   loq_tic <- 0.1
   loq_tn <- 0.1
+  loq_hwc <- 50
 
   # Create function harmonise_below_loqs
 
-  harmonise_below_loqs <- function(var, tc = NULL, tic = NULL, tn = NULL,
+  harmonise_below_loqs <- function(var,
+                                   tc = NULL, tic = NULL, tn = NULL, hwc = NULL,
                                    loq_tc = 0.5, # g C kg-1 DS
                                    loq_tic = 0.1, # g C kg-1 DS
-                                   loq_tn = 0.1) { # g N kg -1 DS
+                                   loq_tn = 0.1, # g N kg -1 DS
+                                   loq_hwc = 50 # mg C kg-1 DS
+                                   ) {
 
     # This function converts below-LOQ values to 50 % of the LOQ
 
@@ -44,13 +53,16 @@ get_lab_data <- function() {
 
     if (var == "TOC") {
 
-      assertthat::assert_that(!is.null(tc))
+      assertthat::assert_that(
+        !is.null(tc),
+        msg = "Argument 'tc' must be provided when var = 'TOC'")
 
-      if (is.null(tic)) {
+      if (is.null(tic) || is.na(tic)) {
         tic <- 0
       }
 
       toc_harm <- case_when(
+        is.na(tc) ~ NA_real_,
         # TIC is 0, so TOC ≈ TC
         tic == 0 & tc < loq_tc ~ 0.5 * loq_tc,
         # General case when TIC is not 0
@@ -59,39 +71,56 @@ get_lab_data <- function() {
         TRUE ~ (tc - tic))
 
       return(toc_harm)
-    }
 
-    if (var == "TIC") {
+    } else if (var == "TIC") {
 
-      if (is.null(tic)) {
-        tic <- 0
-      }
+      assertthat::assert_that(
+        !is.null(tic),
+        msg = "Argument 'tic' must be provided when var = 'TIC'")
 
       tic_harm <- case_when(
+        is.na(tic) ~ NA_real_,
         tic == 0 ~ 0,
         tic < loq_tic ~ 0.5 * loq_tic,
         TRUE ~ tic)
 
       return(tic_harm)
-    }
 
-
-    if (var %in% c("TN", "TC")) {
-
-      tn  <- if (is.null(tn))  NA_real_ else tn
-      tc  <- if (is.null(tc))  NA_real_ else tc
+    } else if (var %in% c("TN", "TC", "HWC")) {
 
       if (var == "TN") {
+
+        assertthat::assert_that(
+          !is.null(tn),
+          msg = "Argument 'tn' must be provided when var = 'TN'")
+
         value <- tn
         loq_value <- loq_tn
+
       } else if (var == "TC") {
+
+        assertthat::assert_that(
+          !is.null(tc),
+          msg = "Argument 'tc' must be provided when var = 'TC'")
+
         value <- tc
         loq_value <- loq_tc
+
+      } else if (var == "HWC") {
+
+        assertthat::assert_that(
+          !is.null(hwc),
+          msg = "Argument 'hwc' must be provided when var = 'HWC'")
+
+        value <- hwc
+        loq_value <- loq_hwc
+
       }
 
       assertthat::assert_that(!is.null(value))
 
       value_harm <- case_when(
+        is.na(value) ~ NA_real_,
         value < loq_value ~ 0.5 * loq_value,
         TRUE ~ value)
 
@@ -121,9 +150,11 @@ get_lab_data <- function() {
 
     if (var == "TOC") {
 
-      assertthat::assert_that(!is.null(tc))
+      assertthat::assert_that(
+        !is.null(tc),
+        msg = "Argument 'tc' must be provided when var = 'TOC'")
 
-      if (is.null(tic)) {
+      if (is.null(tic) || is.na(tic)) {
         tic <- 0
       }
 
@@ -140,22 +171,34 @@ get_lab_data <- function() {
 
     if (var %in% c("TN", "TC", "TIC")) {
 
-      tn  <- if (is.null(tn))  NA_real_ else tn
-      tc  <- if (is.null(tc))  NA_real_ else tc
-      tic <- if (is.null(tic)) NA_real_ else tic
-
       if (var == "TN") {
+
+        assertthat::assert_that(
+          !is.null(tn),
+          msg = "Argument 'tn' must be provided when var = 'TN'")
+
         value <- tn
         urel <- urel_tn
+
       } else if (var == "TC") {
+
+        assertthat::assert_that(
+          !is.null(tc),
+          msg = "Argument 'tc' must be provided when var = 'TC'")
+
         value <- tc
         urel <- urel_tc
+
       } else if (var == "TIC") {
+
+        assertthat::assert_that(
+          !is.null(tic),
+          msg = "Argument 'tic' must be provided when var = 'TIC'")
+
         value <- tic
         urel <- urel_tic
-      }
 
-      assertthat::assert_that(!is.null(value))
+      }
 
       u_var <- (urel * value)
 
@@ -196,13 +239,16 @@ get_lab_data <- function() {
 
     if (var == "TOC") {
 
-      assertthat::assert_that(!is.null(tc))
+      assertthat::assert_that(
+        !is.null(tc),
+        msg = "Argument 'tc' must be provided when var = 'TOC'")
 
-      if (is.null(tic)) {
+      if (is.null(tic) || is.na(tic)) {
         tic <- 0
       }
 
       var_min <- case_when(
+        is.na(tc) ~ NA_real_,
         # TIC is 0, so TOC ≈ TC
         tic == 0 & tc < loq_tc ~ 0,
         # General case when TIC is not 0
@@ -211,58 +257,71 @@ get_lab_data <- function() {
         TRUE ~ max(c((tc - tic) - u_var, 0)))
 
       var_max <- case_when(
-        # TIC is 0, so TOC ≈ TC
+        is.na(tc) ~ NA_real_,
+        # Below-LOQ for TIC is 0, so TOC ≈ TC
         tic == 0 & tc < loq_tc ~ loq_tc,
-        # General case when TIC is not 0
+        # Below-LOQ for general case when TIC is not 0
         (tc - tic) < (loq_tc - loq_tic) ~ (loq_tc - loq_tic),
         # Above LOQ
         TRUE ~ min(c((tc - tic) + u_var,
                      1E3))) # Values cannot be higher than 1E3 since reported
                             # in g kg-1
-    }
 
-    if (var == "TIC") {
+      # End of "TOC"
 
-      if (is.null(tic)) {
-        tic <- 0
-      }
+    } else if (var == "TIC") {
+
+      assertthat::assert_that(
+        !is.null(tic),
+        msg = "Argument 'tic' must be provided when var = 'TIC'")
 
       var_min <- case_when(
+        is.na(tic) ~ NA_real_,
         tic == 0 ~ 0,
         tic < loq_tic ~ 0,
-        TRUE ~ max(c(tic - u_var, 0)))
+        TRUE ~ pmax(tic - u_var, 0))
 
       var_max <- case_when(
+        is.na(tic) ~ NA_real_,
         tic == 0 ~ 0,
         tic < loq_tic ~ loq_tic,
-        TRUE ~ min(c(tic + u_var, 1E3)))
-    }
+        TRUE ~ pmin(tic + u_var, 1E3))
 
+      # End of "TIC"
 
-    if (var %in% c("TN", "TC")) {
-
-      tn  <- if (is.null(tn))  NA_real_ else tn
-      tc  <- if (is.null(tc))  NA_real_ else tc
+    } else if (var %in% c("TN", "TC")) {
 
       if (var == "TN") {
+
+        assertthat::assert_that(
+          !is.null(tn),
+          msg = "Argument 'tn' must be provided when var = 'TN'")
+
         value <- tn
         loq_value <- loq_tn
-      } else if (var == "TC") {
+      }
+
+      if (var == "TC") {
+
+        assertthat::assert_that(
+          !is.null(tc),
+          msg = "Argument 'tc' must be provided when var = 'TC'")
+
         value <- tc
         loq_value <- loq_tc
       }
 
-      assertthat::assert_that(!is.null(value))
-
       var_min <- case_when(
+        is.na(value) ~ NA_real_,
         value < loq_value ~ 0,
         TRUE ~ max(c(value - u_var, 0)))
 
       var_max <- case_when(
+        is.na(value) ~ NA_real_,
         value < loq_value ~ loq_value,
         TRUE ~ min(c(value + u_var, 1E3)))
 
-    }
+    } # End of "TN" or "TC"
 
     var_min <- round(var_min, 2)
     var_max <- round(var_max, 2)
@@ -275,16 +334,21 @@ get_lab_data <- function() {
 
 
 
+
+
+
+
+
   # Compile all RFs ----
 
   data_lab <- NULL
   rfs_no_results <- NULL
 
-  for (rf_i in rfs) {
+  for (rf_i in vec_rf) {
 
     # Lab data in long format:
 
-    # Samples from test sampling last year
+    # Samples from test sampling 2024
     # data_lab_i <- read_lims_data(connection = connection,
     #                              project = c("V-24V006-01"),
     #                              sql_template = "default",
@@ -296,11 +360,36 @@ get_lab_data <- function() {
                      sql_template = "default",
                      show_query = FALSE))
 
-    if (nrow(data_lab_i) == 0) {
+    if (nrow(data_lab_i) == 0 ||
+        # Or if TC has not been reported yet
+        !any(grepl("C_N_ANAL_V__T.C.DS", data_lab_i$Sleutel))) {
 
       rfs_no_results <- c(rfs_no_results, rf_i)
 
       next
+    }
+
+    # Did any extra analyses take place?
+
+    analyses_done <- unique(data_lab_i$LimsAnalyseNaam)
+
+    analyses_expected <- c(
+      "TEXTUUR_LD_LS13320_V",
+      "TEXTUUR_DEST_SP10_V",
+      "DS_OVEN_105_ALQ",
+      "DS_OVEN_105",
+      "C_TIC_ANALYSER",
+      "C_N_ANAL_V",
+      "PHCACL2_VOL_SP2000_V",
+      "C_HWC_V" # Hot water carbon - at first only for Belgian mineral samples
+      )
+
+    extra_analyses <-
+      analyses_done[which(!analyses_done %in% analyses_expected)]
+
+    if (!identical(extra_analyses, character(0))) {
+      cat(paste0("Extra analyses for RF '", rf_i, "': ",
+                 paste(extra_analyses, collapse = ", "), "\n"))
     }
 
     # Remove rows from duplicate samples (10 % of the samples is measured
@@ -321,7 +410,7 @@ get_lab_data <- function() {
         where(~ is.character(.) &&
                 all(
                   is.na(.) |
-                    grepl("^[0-9,.]+$", .)
+                    grepl("^[0-9.,eE+-]+$", .)
                 )),
         ~ as.numeric(gsub(",", ".", .))
       )) %>%
@@ -346,6 +435,9 @@ get_lab_data <- function() {
     # Parameters with multiple columns
     dup_pars <- unique(col_names[duplicated(col_names)])
 
+    # Original names of the columns that are duplicated
+    cols_dup_orig <- names(datax_lab_i)[which(col_names %in% dup_pars)]
+
     # If there are any duplicated columns
     if (!identical(dup_pars, character(0))) {
 
@@ -354,7 +446,7 @@ get_lab_data <- function() {
       for (par in dup_pars) {
 
         # Columns belonging to this parameter
-        cols_par <- names(datax_lab_i)[col_names == par]
+        cols_par <- names(datax_lab_i)[which(col_names == par)]
 
         # Extract subset
         tmp <- datax_lab_i %>%
@@ -407,7 +499,7 @@ get_lab_data <- function() {
           cols_keep <- names(x)[keep]
 
           # Extract x and y from "__x__y"
-          suffixes <- stringr::str_match(
+          suffixes <- str_match(
             cols_keep,
             "__([0-9]+)__([0-9]+)$"
           )
@@ -429,8 +521,7 @@ get_lab_data <- function() {
       # Remove original replicated columns
       datax_lab_i <- datax_lab_i %>%
         select(
-          -any_of(c(names(datax_lab_i)[col_names %in% dup_pars]))
-        )
+          -any_of(cols_dup_orig))
 
     } # End of "if there are any duplicated columns"
 
@@ -443,9 +534,9 @@ get_lab_data <- function() {
       # (i.e., remove trailing patterns of "__<number>__<number>")
       rename_with(~ gsub("__\\d+__\\d+$", "", .x)) %>%
       mutate(
-        # if TIC col doesn't exist, create it and fill with 0
+        # if TIC col doesn't exist, create it and fill
         "C_TIC_ANALYSER__T.IC.DS" =
-        if (!"C_TIC_ANALYSER__T.IC.DS" %in% names(.)) 0 else
+        if (!"C_TIC_ANALYSER__T.IC.DS" %in% names(.)) NA_real_ else
           C_TIC_ANALYSER__T.IC.DS,
         # Same for texture columns (missing for forest floor)
         "TEXTUUR_LD_LS13320_V__KLEI.04.6µm" =
@@ -457,7 +548,11 @@ get_lab_data <- function() {
         "TEXTUUR_LD_LS13320_V__ZAND.63.2000µm" =
           if (
             !"TEXTUUR_LD_LS13320_V__ZAND.63.2000µm" %in% names(.)) NA_real_ else
-              TEXTUUR_LD_LS13320_V__ZAND.63.2000µm
+              TEXTUUR_LD_LS13320_V__ZAND.63.2000µm,
+        # Hot water carbon
+        "C_HWC_V__HWC.OC.DS" =
+          if (!"C_HWC_V__HWC.OC.DS" %in% names(.)) NA_real_ else
+            C_HWC_V__HWC.OC.DS,
         ) %>%
       # Add the uncertainty ranges of all variables first
       rowwise() %>%
@@ -476,6 +571,7 @@ get_lab_data <- function() {
       unnest_wider(toc_unc) %>%
       unnest_wider(tn_unc) %>%
       unnest_wider(tic_unc) %>%
+      rowwise() %>%
       mutate(
         c_organic_total =
           round(harmonise_below_loqs("TOC",
@@ -486,6 +582,12 @@ get_lab_data <- function() {
         c_inorganic_total =
           round(harmonise_below_loqs("TIC",
                                      tic = C_TIC_ANALYSER__T.IC.DS), 2),
+        c_hwc =
+          round(harmonise_below_loqs("HWC",
+                                     hwc = C_HWC_V__HWC.OC.DS), 2)
+        ) %>%
+      ungroup() %>%
+      mutate(
         ph_cacl2 = round(PHCACL2_VOL_SP2000_V__pH.CaCl2.20, 2),
         # IMPORTANT: the boundaries for clay, silt, sand according to laser
         # diffraction possibly need to be revised!!!
@@ -493,24 +595,38 @@ get_lab_data <- function() {
         silt = round(TEXTUUR_LD_LS13320_V__LEEM.6.63µm, 1),
         sand = round(TEXTUUR_LD_LS13320_V__ZAND.63.2000µm, 1)) %>%
       rename(sample_id = ExternSampleID) %>%
+      mutate(rf_id = rf_i) %>%
+      # Sometimes there are separate texture fractions, but we do not need
+      # those:
+      # "TEXTUUR_LD_LS13320_V__FRAC.04.2µm"
+      # "TEXTUUR_LD_LS13320_V__FRAC.2.6µm"
+      # "TEXTUUR_LD_LS13320_V__FRAC.6.50µm"
+      # "TEXTUUR_LD_LS13320_V__FRAC.50.63µm"
+      # "TEXTUUR_LD_LS13320_V__FRAC.63.2000µm"
       select(
-        sample_id,
+        sample_id, rf_id,
         c_organic_total, c_organic_total_min, c_organic_total_max,
         n_total, n_total_min, n_total_max,
         c_inorganic_total, c_inorganic_total_min, c_inorganic_total_max,
         ph_cacl2,
         clay,
         silt,
-        sand)
+        sand,
+        c_hwc)
 
     data_lab <- bind_rows(data_lab,
                           datax_lab_i)
 
   } # End of loop across RFs
 
-cat("\n\n\nNone of the lab results are ready for the following RFs:\n")
-cat(rfs_no_results)
-cat("\n\n")
+
+  if (!is.null(rfs_no_results)) {
+
+    cat("\n\nNone of the lab results are ready for the following RFs:\n")
+    cat(rfs_no_results)
+    cat("\n\n")
+
+  }
 
 return(as_tibble(data_lab))
 
