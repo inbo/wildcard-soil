@@ -152,7 +152,8 @@ show_app_data_per_plot <- function(plot_code_simple = NULL,
                              "Global Environment. Please run functions ",
                              "'get_app_data()' and 'app_data_long()'."))
 
-    assert_that(exists("df_sampling_points", envir = globalenv()),
+    assert_that(exists("df_sampling_points", envir = globalenv()) ||
+                  exists("res_app_data_long", envir = globalenv()),
                 msg = paste0("Dataframe 'df_sampling_points' was not found ",
                              "in the Global Environment. Please run functions ",
                              "'get_app_data()' and 'app_data_long()'."))
@@ -168,8 +169,17 @@ show_app_data_per_plot <- function(plot_code_simple = NULL,
     df_plot_i <- get("df_plot", envir = globalenv()) %>%
       filter(plot_code_simple == plot_code_simple_i)
 
-    df_sampling_points_i <- get("df_sampling_points", envir = globalenv()) %>%
-      filter(plot_code_simple == plot_code_simple_i)
+    if (!exists("df_sampling_points", envir = globalenv())) {
+
+      df_sampling_points_i <-
+        get("res_app_data_long", envir = globalenv())$df_sampling_points %>%
+        filter(plot_code_simple == plot_code_simple_i)
+
+    } else {
+
+      df_sampling_points_i <- get("df_sampling_points", envir = globalenv()) %>%
+        filter(plot_code_simple == plot_code_simple_i)
+    }
 
     df_local_lab_i <- get("df_local_lab", envir = globalenv()) %>%
       filter(plot_code_simple == plot_code_simple_i)
