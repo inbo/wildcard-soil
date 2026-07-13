@@ -142,8 +142,8 @@ get_app_data <- function(path = NULL,
     # Remove the empty column
     {
       df <- .
-      if ("...10" %in% names(df) && all(is.na(df$`...10`))) {
-        select(df, -`...10`)
+      if ("...9" %in% names(df) && all(is.na(df$`...9`))) {
+        select(df, -`...9`)
       } else {
         df
       }
@@ -156,7 +156,16 @@ get_app_data <- function(path = NULL,
              str_to_lower()) %>%
     filter(!is.na(GlobalID)) %>%
     # Filter out test survey from INBO 2024
-    filter(!(team == "INBO" & grepl("2024", date_time)))
+    filter(!(team == "INBO" & grepl("2024", date_time))) %>%
+    mutate(
+      plot_id_harmonized = gsub(".0", "", plot_id_harmonized),
+      plot_id_harmonized = case_when(
+        grepl("Transect", plot_id_harmonized) ~ plot_id_harmonized,
+        grepl("EXTRA", team_harmonized) |
+          grepl("location does not correspond", plot_id_database) ~ "NA",
+        is.na(plot_id_database) | plot_id_database %in% c("NA", "") ~
+          coalesce(plot_id_harmonized, "NA"),
+        TRUE ~ plot_id_database))
 
 
 
