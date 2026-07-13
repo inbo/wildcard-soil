@@ -76,10 +76,14 @@ overlay_tif <- function(sf1,
 
   name_col <- names(sf1_extracted)
 
+  if (is.factor(sf1$col_overlay)) {
+    sf1$col_overlay <- as.character(sf1$col_overlay)
+  }
 
   # 4. Avoid NA and values in values_to_avoid ----
 
   vec <- which(is.na(sf1$col_overlay) |
+                 (sf1$col_overlay == "") |
                  sf1$col_overlay %in% values_to_avoid)
 
   # If there are any such records, create a buffer and retrieve the
@@ -129,7 +133,9 @@ overlay_tif <- function(sf1,
 
           # Remove NA values and values in values_to_avoid
           filtered_abundance <- abundance %>%
-            filter(!is.na(col_overlay) & !(col_overlay %in% values_to_avoid))
+            filter(!is.na(col_overlay) &
+                     !(col_overlay == "") &
+                     !(col_overlay %in% values_to_avoid))
 
           # If nothing left, return NA
           if (nrow(filtered_abundance) == 0) {
@@ -152,6 +158,11 @@ overlay_tif <- function(sf1,
 
     } # End of for loop along all IDs
 
+    if (is.factor(extracted_values_summ$col_overlay)) {
+      extracted_values_summ$col_overlay <-
+        as.character(extracted_values_summ$col_overlay)
+    }
+
 
 
     # Add values to sf1_sub
@@ -165,7 +176,9 @@ overlay_tif <- function(sf1,
                 by = "row_id") %>%
       mutate(
         col_overlay = ifelse(
-          (is.na(col_overlay) | col_overlay %in% values_to_avoid) &
+          (is.na(col_overlay) |
+             (col_overlay == "") |
+             col_overlay %in% values_to_avoid) &
             (!is.na(col_overlay_buffer)),
           col_overlay_buffer,
           col_overlay)) %>%
@@ -177,6 +190,7 @@ overlay_tif <- function(sf1,
   # 5. If there are still any unwanted values ----
 
   vec <- which(is.na(sf1$col_overlay) |
+                 (sf1$col_overlay == "") |
                  sf1$col_overlay %in% values_to_avoid)
 
   # If there are any such records, create a buffer and retrieve the
@@ -226,7 +240,9 @@ overlay_tif <- function(sf1,
 
           # Remove NA values and values in values_to_avoid
           filtered_abundance <- abundance %>%
-            filter(!is.na(col_overlay) & !(col_overlay %in% values_to_avoid))
+            filter(!is.na(col_overlay) &
+                     !(col_overlay == "") &
+                     !(col_overlay %in% values_to_avoid))
 
           # If nothing left, return NA
           if (nrow(filtered_abundance) == 0) {
@@ -249,6 +265,10 @@ overlay_tif <- function(sf1,
 
     } # End of for loop along all IDs
 
+    if (is.factor(extracted_values_summ$col_overlay)) {
+      extracted_values_summ$col_overlay <-
+        as.character(extracted_values_summ$col_overlay)
+    }
 
 
     # Add values to sf1_sub
@@ -262,7 +282,9 @@ overlay_tif <- function(sf1,
                 by = "row_id") %>%
       mutate(
         col_overlay = ifelse(
-          (is.na(col_overlay) | col_overlay %in% values_to_avoid) &
+          (is.na(col_overlay) |
+             (col_overlay == "") |
+             col_overlay %in% values_to_avoid) &
             (!is.na(col_overlay_buffer)),
           col_overlay_buffer,
           col_overlay)) %>%
