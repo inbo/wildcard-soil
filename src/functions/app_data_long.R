@@ -510,17 +510,13 @@ app_data_long <- function(app_data_wide,
 
   if (apply_corrections) {
 
-    # TO DO: check humus forms, e.g.,
-    # "UCPH__4__Norreskov__NA" should be Moder instead of Mor?
-    # "UL__7__Menina__NA" varies between Tangel and Mull due to erosion. Tangel
-    #    better since natural humus form disregarding slope?
-    # "UNITBV__2__Cozia__NA" Mull or Moder instead of Mor?
-    # "WR__5__Vijlnerbos__NA": is Tangel in NL possible? check pH
-    # "WSL__18__Fuerstenhalde__NA": should be Mull (no OFH)
-    # Humus forms of semi-terrestrials to "Semi-terrestrial"?
-    #    (e.g., Seeliwald, Boedmerenwald, Rejviz)
+    df_stratifiers <- suppressMessages(
+      read_sheet(as_id(id_stratifiers)) %>%
+      select(plot_code_simple, wrb_ref_soil_group_corr, humus_form_corr))
 
     df_plot <- df_plot %>%
+      left_join(df_stratifiers,
+                by = "plot_code_simple") %>%
       mutate(
         # Add any plots with slopes reported as percentages
         slope_deg = case_when(
@@ -534,20 +530,23 @@ app_data_long <- function(app_data_wide,
           # This is the case for:
           # "LWF__x__Hoellbachgespreng__NA" (original: 43.4 °)
           # "WSL__31__Weidel__NA" (original: 52 °)
-          slope_deg > 40 ~ 40,
-          TRUE ~ slope_deg
+          # Note: at the moment, we decided to trust the slope data
+          # (which are confirmed by the partner)
+          # However, it would be relevant to check the sensitivity of the
+          # calculated stocks to the selected slope (e.g. 40 ° vs 52 °)
+          # slope_deg > 40 ~ 40,
+          TRUE ~ coalesce(slope_deg, 0)
         ),
-        humus_form = case_when(
-          # Humus form WSL Seeliwald (histosol) should not be Mor
-          plot_code_simple == "WSL__25__Seeliwald__NA" ~ "Semi-terrestrial",
-          # Plots for which "None" was reported as the humus form (probably
-          # due to the low amount of forest floor). However, based on the field
-          # photos, those are Mulls.
-          plot_code_simple %in% c(
-            "USV__1__Vanatori Natural Park (core area)__NA",
-            "WSL__15__Les Follateres__NA") ~ "Mull",
-          TRUE ~ humus_form
-        ),
+        humus_form = coalesce(humus_form_corr,
+                              humus_form),
+        wrb_ref_soil_group = coalesce(wrb_ref_soil_group_corr,
+                                      wrb_ref_soil_group),
+        # WRB 1st qualifier has not been validated. Therefore,
+        # original qualifiers are most likely no longer applicable for plots
+        # for which the Reference Soil Group was corrected
+        wrb_qualifier_1 = ifelse(!is.na(wrb_ref_soil_group_corr),
+                                 NA_character_,
+                                 wrb_qualifier_1),
         latitude_dec = case_when(
           # Correction requested by partner
           plot_code_simple == "NWFVA__03-046__Koenigsbuche__NA" ~ 51.582915000,
@@ -559,7 +558,41 @@ app_data_long <- function(app_data_wide,
           # Typo detected relative to HIS metadata table (original: 9.0938)
           plot_code_simple == "NWFVA__03-012__Grosser Freeden__NA" ~ 8.0938,
           TRUE ~ longitude_dec
-        ))
+        ),
+        # eDNA samples were recollected for three German plots (due to freezer
+        # that got unfrosted). Correct the date, weather and soil metadata for
+        # the new sampling event, as those metadata are more important for
+        # eDNA than for other parameters.
+        # Note: "actual_weather", "past_weather" and "soil_condition" were
+        # he same for the two sampling events for all three plots:
+        # actual_weather: "partly cloudy" (without rain)
+        # past_weather: "rainy without heavy rain in the last 24 hours"
+        # soil_condition: "normal"
+        survey_date = case_when(
+          plot_code_simple == "NWFVA__03-003__Herrenholz__NA" ~
+            as.Date(parse_date("2025-07-15")), # Original survey: 2025-05-26
+          plot_code_simple == "NWFVA__03-002__Franzhorn__a" ~
+            as.Date(parse_date("2025-07-14")), # Original survey: 2025-06-04
+          plot_code_simple == "NWFVA__03-002__Franzhorn__b" ~
+            as.Date(parse_date("2025-07-14")), # Original survey: 2025-06-05
+          TRUE ~ survey_date
+        ),
+        survey_month = case_when(
+          plot_code_simple == "NWFVA__03-003__Herrenholz__NA" ~ 7,
+          plot_code_simple == "NWFVA__03-002__Franzhorn__a" ~ 7,
+          plot_code_simple == "NWFVA__03-002__Franzhorn__b" ~ 7,
+          TRUE ~ survey_month
+        ),
+        air_temperature = case_when(
+          plot_code_simple == "NWFVA__03-003__Herrenholz__NA" ~
+            20, # Original survey: 15 °C
+          plot_code_simple == "NWFVA__03-002__Franzhorn__a" ~
+            22, # Original survey: 15 °C
+          plot_code_simple == "NWFVA__03-002__Franzhorn__b" ~
+            22, # Original survey: 16 °C
+          TRUE ~ air_temperature
+        )) %>%
+      select(-wrb_ref_soil_group_corr, -humus_form_corr)
 
   } # End of "if apply_corrections"
 
@@ -738,10 +771,13 @@ app_data_long <- function(app_data_wide,
         # (since only P1 was sampled)
         across(
           matches("^P[2-5]_(OL|OFH)_(thickness|tamass)$"),
-          ~ if_else(plot_code_simple == "WSL__25__Seeliwald__NA",
-                    NA_real_,
-                    .x)
-        )
+          ~ ifelse(plot_code_simple == "WSL__25__Seeliwald__NA",
+                   NA_real_,
+                   .x)
+        ),
+        # Note: thicknesses for LWF 65_a OFH were kept from the first survey
+        # as they were not recorded for the second, but considered similar
+        # by the partner
       ) %>%
       # ---
       # Any MANUAL CORRECTIONS for surface_frame should go here!
@@ -908,6 +944,23 @@ app_data_long <- function(app_data_wide,
 
 
   df_ff_summ <- df_sampling_points_ff %>%
+    # Corrections for slope in the forest floor
+    # 1. All depths (thickness) should be reported plumb-vertically since
+    #    below-ground depths are recorded in a plumb-vertical way
+    # 2. Surface area of the forest floor sampling frame should be multiplied
+    #    with cos(slope) for a horizontal projection (i.e., surface area
+    #    "from the sky"). In other words, the areal mass will increase by
+    #    a factor 1/cos(slope)
+    left_join(
+      df_plot %>%
+        select(plot_code_simple, slope_deg),
+      by = "plot_code_simple"
+    ) %>%
+    mutate(
+      thickness = thickness / cos(slope_deg * pi / 180),
+      surface_frame = surface_frame * cos(slope_deg * pi / 180)
+    ) %>%
+    # Summarise
     group_by(code, institute_sampling,
              plot_code_simple, code_layer, surface_frame) %>%
     reframe(
@@ -1275,17 +1328,22 @@ app_data_long <- function(app_data_wide,
           plot_code_simple == "UNIUD/HSI_EXTRA__3__Limsky Kanal__LI-MN" &
             code_layer == "M61" ~ 3,
           # As confirmed by partner
+          plot_code_simple == "VUK__5__Cahnov-Soutok__NA" &
+            code_layer == "M01" ~ 4,
+          # As confirmed by partner
           plot_code_simple == "WSL__21__Tariche Bois Banal__NA" &
             code_layer == "M01" ~ 4,
           # As confirmed by partner
           plot_code_simple == "WSL__25__Seeliwald__NA" &
             code_layer %in% c("M01", "M13") ~ 3,
-          # Note: this may be a mistake. The partner recalled collecting
-          # three rings for M36. However, that is impossible (would give a
-          # bulk density of 2622 kg m-3).
-          # TO DO: compare with PTF prediction.
+          # Note: The partner recalled collecting three rings for M36.
+          # However, that is impossible (would give a bulk density of
+          # 2622 kg m-3). After comparison with the PTF bulk density
+          # (1151 kg m-3), it seems most likely that they took 5 rings
+          # (1529 kg m-3). We therefore decided to assume 5 rings together
+          # with the partner
           plot_code_simple == "WSL__25__Seeliwald__NA" &
-            code_layer == "M36" ~ 4,
+            code_layer == "M36" ~ 5,
           # As reported
           plot_code_simple == "WSL__39__Combe Biosse__NA" &
             code_layer %in% c("M01", "M36") ~ 2,
@@ -1320,8 +1378,7 @@ app_data_long <- function(app_data_wide,
                  "FVA-BW__500__Barlochkar__NA",
                  "FVA-BW__510__Sturmlesloch__NA",
                  "FVA-BW__59__Teufelsries__NA",
-                 "NWFVA__03-049__Haringer Berg__NA",
-                 "NWFVA__06-004__Wattenberg und Hundsberg__b")) |
+                 "NWFVA__03-049__Haringer Berg__NA")) |
             # M36
             (code_layer == "M36" &
                plot_code_simple %in% c(
@@ -1332,6 +1389,9 @@ app_data_long <- function(app_data_wide,
           # Based on feedback partner
           code_layer == "M13" &
             plot_code_simple %in% c("NWFVA__03-014__Huenstollen__NA") ~ 10,
+          (code_layer == "M13" &
+             plot_code_simple ==
+               "NWFVA__06-004__Wattenberg und Hundsberg__b") ~ NA_real_,
           TRUE ~ count_rings
         ),
         undist_sampling_points = case_when(
@@ -1414,17 +1474,22 @@ app_data_long <- function(app_data_wide,
           plot_code_simple == "UNIUD/HSI_EXTRA__3__Limsky Kanal__LI-MN" &
             code_layer == "M61" ~ "P1,P3,P4",
           # As confirmed by partner
+          plot_code_simple == "VUK__5__Cahnov-Soutok__NA" &
+            code_layer == "M01" ~ "P1,P3,P4,P5",
+          # As confirmed by partner
           plot_code_simple == "WSL__21__Tariche Bois Banal__NA" &
             code_layer == "M01" ~ "P1,P2,P3,P4",
           # As confirmed by partner
           plot_code_simple == "WSL__25__Seeliwald__NA" &
             code_layer %in% c("M01", "M13") ~ "P1,P1,P1",
-          # Note: this may be a mistake. The partner recalled collecting
-          # three rings for M36. However, that is impossible (would give a
-          # bulk density of 2622 kg m-3).
-          # TO DO: compare with PTF prediction.
+          # Note: The partner recalled collecting three rings for M36.
+          # However, that is impossible (would give a bulk density of
+          # 2622 kg m-3). After comparison with the PTF bulk density
+          # (1151 kg m-3), it seems most likely that they took 5 rings
+          # (1529 kg m-3). We therefore decided to assume 5 rings together
+          # with the partner
           plot_code_simple == "WSL__25__Seeliwald__NA" &
-            code_layer == "M36" ~ "P1,P1,P1,P1",
+            code_layer == "M36" ~ "P1,P1,P1,P1,P1",
           # As reported
           plot_code_simple == "WSL__39__Combe Biosse__NA" &
             code_layer %in% c("M01", "M36") ~ "P3,P3",
@@ -1437,7 +1502,6 @@ app_data_long <- function(app_data_wide,
           # As confirmed by partner
           plot_code_simple == "WSL__6__St. Jean__NA" &
             code_layer == "M01" ~ "P1,P2,P7",
-
           TRUE ~ undist_sampling_points
         ),
         vol_ring = case_when(
@@ -1460,6 +1524,13 @@ app_data_long <- function(app_data_wide,
                  "FVA-BW__510__Sturmlesloch__NA",
                  "FVA-BW__59__Teufelsries__NA",
                  "NWFVA__03-049__Haringer Berg__NA",
+                 # Wattenberg und Hundsberg:
+                 # the partner and central lab doubt about the information
+                 # reported by the field surveyors. Therefore, it will
+                 # anyway be replaced by the pedotransfer-predicted bulk
+                 # density. The central lab also received stones that are too
+                 # big for the 5.3 cm³ small rings, which makes it doubtful
+                 # whether the latter were actually used.
                  "NWFVA__06-004__Wattenberg und Hundsberg__b",
                  "NWFVA__03-074__Butterberg_NI__NA", # Based on feedback partner
                  "NWFVA__03-014__Huenstollen__NA" # Based on feedback partner
@@ -1732,9 +1803,17 @@ app_data_long <- function(app_data_wide,
         across(
           matches("^P[1-9]_depth_bedrock$"),
           ~ ifelse(
-            # Partner recommended to replace original bedrock depth (7.5 cm)
-            # by 0 cm
-            plot_code_simple == "WSL__23__Boedmerenwald__NA",
+            plot_code_simple %in% c(
+              # Partner recommended to replace original bedrock depth (7.5 cm)
+              # by 0 cm
+              "WSL__23__Boedmerenwald__NA",
+              # The same seems reasonable for another WSL plot without
+              # below-ground samples
+              # (bedrock depth originally between 2 - 45 cm, but they noted:
+              # "No mineral soil layer, thin OL, very thick OFH and
+              #  bedrock under"
+              #  and this seems correct based on the photos)
+              "WSL__40__La Niva__NA"),
             0,
             .x
           )
@@ -2030,9 +2109,9 @@ app_data_long <- function(app_data_wide,
           # use the deepest depth that was reached
           # Based on information in app data ---
           # If the partner indicated (in comments) that:
-          # - they could/did not go deeper than a certain depth (that is shallower
-          #   than the theoretical depths for the different sampling points in
-          #   standard and stony sites), without reporting bedrock.
+          # - they could/did not go deeper than a certain depth (that is
+          #   shallower than the theoretical depths for the different sampling
+          #   points in standard and stony sites), without reporting bedrock.
           #   This can be due to stoniness, compaction, soil being either too
           #   loose or too saturated to stay inside a gouge auger.
           #   Notes:
@@ -2105,6 +2184,11 @@ app_data_long <- function(app_data_wide,
 
 
   df_bedrock_cens <- df_bedrock_cens %>%
+    left_join(
+      df_plot %>%
+        select(plot_code_simple, slope_deg),
+      by = "plot_code_simple"
+    ) %>%
     mutate(
       # Replace depth NA by censored value
       depth = case_when(
@@ -2122,17 +2206,33 @@ app_data_long <- function(app_data_wide,
         depth_reached < depth_theor ~ depth_reached,
         TRUE ~ depth_theor
         ),
+      # Depths above are plumb-vertical (all measured depths are assumed to
+      # be measured plumb-vertically following the instructions in the soil
+      # sampling protocol). The final depth of the stock is
+      # 100 cm ortogonally to the local slope gradient, i.e. 100 / cos(slope)
+      # cm plumb-vertically. In order to simplify the Bayesian approach with
+      # Beta distribution, let's use the summarise_bedrock_depths script
+      # only with ortogonal depths, so that the maximum is 1 (100 cm).
+      # Therefore, temporarily convert the depths to their ortogonal
+      # counterpart.
+      depth_ort = depth * cos(slope_deg * pi / 180)
+      ) %>%
+    mutate(
       # Convert to m
-      depth_m = depth / 100,
-      # When depth is 100, there is no censoring for SOC stock in 100 cm
+      depth_ort_m = depth_ort / 100,
+      # When depth_ort is 100, there is no censoring for SOC stock in 100 cm
+      # Note: plots for which default depths of 100 cm were reached across
+      # P1-5, but with a slope > 0, will need censoring also for P1-5.
+      # For example, with a slope of 20 °C, the stock needs to go until 106 cm
+      # (plumb-vertically) while they went to 100 cm only.
       censoring = case_when(
-        depth == 100 ~ "none",
+        depth_ort >= 99.5 ~ "none",
         TRUE ~ censoring),
       # Boundary-avoiding transformation
-      depth_m = case_when(
-        depth_m == 0 ~ 0.005,
-        depth_m == 1 ~ 0.995,
-        TRUE ~ depth_m
+      depth_ort_m = case_when(
+        depth_ort_m < 0.005 ~ 0.005,
+        depth_ort_m > 0.995 ~ 0.995,
+        TRUE ~ depth_ort_m
       ))
 
 
@@ -2173,7 +2273,7 @@ app_data_long <- function(app_data_wide,
     left_join(
       df_bedrock_cens %>%
         pivot_wider(
-          id_cols = c(plot_code_simple, site_type, depth_reached),
+          id_cols = c(plot_code_simple, site_type, depth_reached, slope_deg),
           names_from = p_id,
           values_from = c(depth, censoring)
         ) %>%
@@ -2189,56 +2289,68 @@ app_data_long <- function(app_data_wide,
           )
         ) %>%
         ungroup() %>%
-        select(plot_code_simple, depth_reached, contains("compiled")),
+        select(plot_code_simple, depth_reached, slope_deg,
+               contains("compiled")),
       by = "plot_code_simple"
     ) %>%
-    # Add summarised bedrock depth (posterior mean and 95% credible interval)
+    # Add summarised bedrock depth (posterior mean and 95 % credible interval)
     left_join(
       df_bedrock_summ %>%
-        rename(depth_bedrock = .epred,
+        mutate(depth_bedrock = .epred,
                depth_bedrock_min = .lower,
-               depth_bedrock_max = .upper) %>%
+               depth_bedrock_max = .upper
+               ) %>%
         select(plot_code_simple, starts_with("depth_bedrock")),
       by = "plot_code_simple") %>%
     mutate(
       default = (
         (site_type == "Standard site" &
            depth_bedrock_compiled == "NA,NA,NA,NA,NA,NA,NA,NA,NA" &
-           depth_bedrock_cens_compiled == "100,100,100,100,100,30,30,30,30" &
-           censoring_compiled ==
-           "none,none,none,none,none,right,right,right,right") |
+           depth_bedrock_cens_compiled == "100,100,100,100,100,30,30,30,30" # &
+           # censoring_compiled ==
+           # "none,none,none,none,none,right,right,right,right"
+         ) |
           (site_type == "Stony site" &
              depth_bedrock_compiled == "NA,NA,NA,NA,NA,NA,NA,NA,NA" &
-             depth_bedrock_cens_compiled == "100,30,30,30,30,30,30,30,30" &
-             censoring_compiled ==
-             "none,right,right,right,right,right,right,right,right")),
+             depth_bedrock_cens_compiled == "100,30,30,30,30,30,30,30,30" # &
+             # censoring_compiled ==
+             # "none,right,right,right,right,right,right,right,right"
+           )),
+      # Final depth and uncertainty ranges (converted back to plumb-vertical)
       depth_bedrock_min = case_when(
         site_type == "Standard site" & default == TRUE ~
           # Take the mean of all standard site records without non-NA depths
+          # and with a small slope (else, there is already some effect of
+          # the cosine conversion to ortogonal depths)
           round(1E2 * mean(
             depth_bedrock_min[
-              site_type == "Standard site" & default == TRUE],
-            na.rm = TRUE)),
+              site_type == "Standard site" & default == TRUE & slope_deg <= 5],
+            na.rm = TRUE) / cos(slope_deg * pi / 180)
+            ),
         site_type == "Stony site" & default == TRUE ~
           # Take the mean of all stony site records without non-NA depths
+          # and with a small slope (else, there is already some effect of
+          # the cosine conversion to ortogonal depths)
           round(1E2 * mean(
             depth_bedrock_min[
-              site_type == "Stony site" & default == TRUE],
-            na.rm = TRUE)),
-        TRUE ~ round(1E2 * depth_bedrock_min)
+              site_type == "Stony site" & default == TRUE & slope_deg <= 5],
+            na.rm = TRUE) / cos(slope_deg * pi / 180)),
+        depth_bedrock_compiled == "0,0,0,0,0,0,0,0,0" ~ 0,
+        TRUE ~ round(1E2 * depth_bedrock_min / cos(slope_deg * pi / 180))
         ),
       depth_bedrock_max = case_when(
         site_type %in% c("Standard site", "Stony site") &
-          depth_bedrock_compiled == "NA,NA,NA,NA,NA,NA,NA,NA,NA" ~ 100,
-        TRUE ~ round(1E2 * depth_bedrock_max)
+          depth_bedrock_compiled == "NA,NA,NA,NA,NA,NA,NA,NA,NA" ~
+          round(100 / cos(slope_deg * pi / 180)),
+        TRUE ~ round(1E2 * depth_bedrock_max / cos(slope_deg * pi / 180))
         ),
       depth_bedrock = case_when(
-        # Take 100 for records without non-NA depths
+        # Take 100 / cos(slope) for records without non-NA depths
         # (both for standard and stony sites)
         site_type %in% c("Standard site", "Stony site") &
-          default == TRUE ~ 100,
+          default == TRUE ~ round(100 / cos(slope_deg * pi / 180)),
         depth_bedrock_compiled == "0,0,0,0,0,0,0,0,0" ~ 0,
-        TRUE ~ round(1E2 * depth_bedrock)
+        TRUE ~ round(1E2 * depth_bedrock / cos(slope_deg * pi / 180))
       )) %>%
     select(-matches("^P[1-9]_depth_bedrock$")) %>%
     left_join(
@@ -2259,6 +2371,7 @@ app_data_long <- function(app_data_wide,
           # Explicitly mentioned in "P1_other_remarks_fragment"
           # "Soil depth 74 cm"
           # (this is plot-level because different depth reported for P1)
+          # (assumed to be measured plumb-vertically)
           plot_code_simple == "UL__4__Ravna gora__NA" ~ 74,
           TRUE ~ depth_bedrock
           ))
@@ -2438,9 +2551,9 @@ app_data_long <- function(app_data_wide,
         # INBO: correct
         # NWFVA: correct (confirmed by sum >100 vol%)
         # FVA-BW: correct (confirmed by sum >100 vol%)
-        # UL: correct (confirmed by partner and sum >100 vol%)
+        # SFI: correct (confirmed by partner and sum >100 vol%)
         # UNITBV: correct (confirmed by partner and sum >100 vol%)
-        # UNITO + AlberIT - UNIRC: YES (confirmed by partner)
+        # UNITO (incl. AlberIT - UNIRC): YES (confirmed by partner)
         # UNIUD: YES (confirmed by partner)
         # VUK: correct
         #   (confirmed by partner and sum >100 vol%, one record swapped values)
@@ -2501,17 +2614,30 @@ app_data_long <- function(app_data_wide,
           TRUE ~ bulk_den),
         dist = case_when(
           plot_code_simple == "LWF__119_a__Stachel__NA" &
-            code_layer == "M13" ~ 1379,
+            code_layer == "M13" ~ 1379, # Dry: 1252
           plot_code_simple == "LWF__100_a__Donauhaenge__NA" &
-            code_layer == "M13" ~ 538,
+            code_layer == "M13" ~ 538, # Dry: 458
           plot_code_simple == "LWF__57_a__Groppenhofer und Rieder Leite__NA" &
-            code_layer == "M01" ~ 574,
+            code_layer == "M01" ~ 574, # Dry: 451
           plot_code_simple == "LWF__65_a__Friedergries__NA" &
-            code_layer == "M13" ~ 599,
-          # TO DO:
-          # partner will give feedback regarding masses being gross or net
-          # institute_sampling == "BFNP" & code_layer %in% c("OL", "OFH") ~
-          #   dist - 2 * 13,
+            code_layer == "M13" ~ 599, # Dry: 495
+          plot_code_simple == "LWF__65_a__Friedergries__NA" &
+            code_layer == "OFH" ~ 4343, # Dry (see df_local_lab): 1150
+          # Note: BFNP initially doubted whether the forest floor masses they
+          # recorded were gross or net, but got confirmation by the student
+          # that they were net (else, 2 * 13 would have had to be subtracted)
+          #
+          # Corrections to correct for likely sample loss
+          # as requested by the partner
+          # Original: 183.9 (net)
+          plot_code_simple == "BGD-NP__1__Berchtesgaden National Park__F035" &
+            code_layer == "OL" ~ 127.58,
+          # Corrections to correct for likely sample loss
+          # as requested by the partner
+          # Original: 256.85 (net)
+          plot_code_simple == "BGD-NP__1__Berchtesgaden National Park__F073" &
+            code_layer == "OL" ~ 161.34,
+          # Corrections from gross to net as requested by the partner
           institute_sampling == "BGD-NP" & code_layer %in% c("OL", "OFH") ~
             dist - mass_bag_field,
           TRUE ~ dist)
@@ -2775,10 +2901,6 @@ app_data_long <- function(app_data_wide,
 
     df_layers_all <- df_layers_all %>%
       relocate(plot_code_simple, .after = "institute_sampling") %>%
-      # select(depth_bedrock_compiled, depth_bedrock_cens_compiled,
-      #        depth_reached, contains("depth_bedrock"),
-      #        plot_code_simple, code_layer, layer_number,
-      #        contains("coaf"), P1_depth_reached) %>%
       mutate(
         P1_coaf_2mm_orig = P1_coaf_2mm,
         P1_coaf_50mm_orig = P1_coaf_50mm
@@ -2788,8 +2910,8 @@ app_data_long <- function(app_data_wide,
       # STEP 1: Info from layer above
       mutate(
         prev_method = lag(P1_coaf_method),
-        prev_coaf   = lag(P1_coaf_2mm),
-        prev_layer  = lag(code_layer)
+        prev_coaf = lag(P1_coaf_2mm),
+        prev_layer = lag(code_layer)
       ) %>%
       # STEP 2:
       # Set vol% coarse fragments to NA when not directly observed or 100
