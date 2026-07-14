@@ -90,8 +90,7 @@ res_app_data_long <- app_data_long(app_data_wide = app_data_wide,
                                    apply_corrections = apply_corrections)
 
 df_layers_out <- res_app_data_long$df_layers
-df_plot <- res_app_data_long$df_plot
-df_sampling_points <- res_app_data_long$df_sampling_points
+df_plot_out <- res_app_data_long$df_plot
 
 
 
@@ -128,16 +127,20 @@ undist <- read_sheet(as_id(id_undist),
 # Switch on VPN of INBO
 cat("Switch on VPN of INBO.\n")
 
+# Get the rf_overview table
+source("./src/functions/get_rf.R")
+
+# Get data
 source("./src/functions/get_lab_data.R")
-data_lab <- get_lab_data()
+data_lab <- get_lab_data(vec_rf = unique(rf_overview$rf))
 
 if (nrow(data_lab) > 0) {
+
+  source("./src/functions/add_ids_simple.R")
 
   data_lab <- data_lab %>%
   # Add sample_id_simple, plot_code_simple, institute_sampling,
   # sample_code, code_layer
-  # At the moment it's not possible to test this using 2025 lab data, but
-  # it should work out (since sample_id should be the same like in the WBLs)
   add_ids_simple()
 
   assertthat::assert_that(all(!is.na(data_lab$plot_code_simple)),
@@ -146,6 +149,19 @@ if (nrow(data_lab) > 0) {
 }
 
 
+
+
+# Check whether all expected samples were analysed
+
+df_rf <- get_rf()
+
+rf_comparison <- df_rf %>%
+  left_join(
+    data_lab %>%
+      select(
+        sample_id, c_organic_total, c_inorganic_total, n_total,
+        ph_cacl2, clay, silt, sand),
+    by = "sample_id")
 
 
 
@@ -274,6 +290,8 @@ dist_masses <-
              code_layer, mass_before, mass_after) %>%
       # ---
       # Mistakes: switched samples at central lab (pretreatment disturbed)
+      # Note: these seem only to be switched in the sample pretreatment,
+      # not in the results of the analytical lab
       # ---
       mutate(
         plot_code_simple = case_when(
@@ -668,24 +686,20 @@ df_layers <- df_layers %>%
       TRUE ~ dry_to_moist_central)
   ) %>%
   select(-any_of(c("dry_to_moist_central_mean"))) %>%
-  # Copy moisture contents central lab from OFH to OL per plot
-  group_by(plot_code_simple) %>%
   mutate(
-    dry_to_moist_central = ifelse(
-      code_layer == "OL",
-      dry_to_moist_central[code_layer == "OFH"][1],
-      dry_to_moist_central)
-  ) %>%
-  ungroup() %>%
-  mutate(
-    dry_to_moist = round(dry_to_moist_local * dry_to_moist_central , 3),
+    dry_to_moist =
+      # Gap-fill dry_to_moist_central by 1 (i.e., for OL)
+      # (Even though local lab drying was incomplete for some partners,
+      #  but the moisture dynamics in OFH are different than in OL)
+      round(dry_to_moist_local * coalesce(dry_to_moist_central, 1), 3),
     # kg m-2 (1 kg m-2 = 10 t ha-1)
     areal_mass = ifelse(
       code_layer %in% c("OL", "OFH"),
       round(
       tamass * 1E-3 * # kg field-moist material over x sampling frame areas
         dry_to_moist / # g dry material / g field-moist material
-        (surface_frame * count_ff_frames), 2), # m2 covered by all frames
+        (surface_frame * count_ff_frames), 2), # m2 (horizontal) covered by
+                                               # all frames
       NA_real_),
     # Minimum and maximum of areal mass, based on the variation
     # between sampling points
@@ -710,7 +724,7 @@ df_layers <- df_layers %>%
       c(areal_mass,
         areal_mass_min,
         areal_mass_max),
-      ~ if_else(
+      ~ ifelse(
         !is.na(.x),
         round(
           .x / # kg m-2
@@ -931,8 +945,6 @@ if (create_inconsistency_report) {
 
 ## 4.1. Data pretreatment undisturbed ----
 
-glimpse(undist)
-
 columns_to_check <- c("mass_recipient_residu",
                       "mass_recipient",
                       "mass_before_gross",
@@ -1088,7 +1100,10 @@ undist_harm <- undist %>%
       c(mass_cf_wet_siev_gross, vol_cf_before),
       ~ ifelse(cf_zero, 0, .)
     ),
-    vol_cf_after = ifelse(cf_zero, NA_real_, vol_cf_after)) %>%
+    vol_cf_after = case_when(
+      cf_zero ~ NA_real_,
+      (vol_cf_after < vol_cf_before) ~ NA_real_,
+      TRUE ~ vol_cf_after)) %>%
   select(-any_of("cf_zero")) %>%
   # Remove INBO WP3 samples
   filter(!grepl("^BE-INBO-INBO_", sample_id))
@@ -1157,6 +1172,7 @@ undist_harm <- undist_harm %>%
         mass_cf),
     vol_cf = case_when(
       !is.na(vol_cf_before) & is.na(vol_cf_after) & vol_cf_before == 0 ~ 0,
+      is.na(vol_cf_after) ~ NA_real_,
       TRUE ~ vol_cf_after - vol_cf_before),
     # Estimated mass based on reported volume (to detect any inconsistencies)
     mass_from_vol =
@@ -1325,7 +1341,7 @@ if (apply_corrections) {
 
 
 
-## 4.2. Calculate areal masses ----
+## 4.2. Calculate areal masses + coarse fragments ----
 #  Bulk density (of fine earth), vol% coarse fragments, areal mass forest floor
 
   source("./src/functions/uncertainty_functions.R")
@@ -1586,26 +1602,167 @@ if (apply_corrections) {
       # Summarise coarse fragments
       # ---
       P1_coaf_2_50mm = P1_coaf_2mm - P1_coaf_50mm,
+      # Combine 2-50mm from two sources: prefer lab (Kopecky rings) over
+      # field estimate. Assumption: lab method is more spatially
+      # representative (5 points) despite potential sampling bias when
+      # hitting stones
       coarse_fragment_2_50mm_vol = ifelse(
         grepl("^M", code_layer),
-        rowMeans(cbind(coarse_fragment_vol_ring, P1_coaf_2_50mm), na.rm = TRUE),
+        coalesce(coarse_fragment_vol_ring,
+                 P1_coaf_2_50mm), # Field estimate as fallback (1 point)
         NA_real_
       ),
-      coarse_fragment_vol = coarse_fragment_2_50mm_vol + P1_coaf_50mm
-    ) # %>%
-    # rowwise() %>%
-    # # TO DO: update based on spatial CF data by VUK
-    # mutate(cf_unc = list(add_cf_uncertainty(P1_coaf_2mm,
-    #                                         P1_coaf_50mm,
-    #                                         coarse_fragment_vol_ring))) %>%
-    # unnest_wider(cf_unc) #%>%
-  # TO DO: round CF
+      # Auxiliary column (note: this can be > 100 which will be handled below)
+      coarse_fragment_vol_aux = coarse_fragment_2_50mm_vol + P1_coaf_50mm) %>%
+    group_by(plot_code_simple) %>%
+    # Info from layer above
+    mutate(
+      prev_method = lag(P1_coaf_method),
+      prev_coaf = lag(coarse_fragment_vol_aux)
+    ) %>%
+    mutate(
+      # Replace coarse_fragment_vol_aux by NA for layers below a layer
+      # that could not be directly observed
+      coarse_fragment_vol_aux = case_when(
+        grepl("Default", P1_coaf_method) &
+          grepl("Default", prev_method) ~ NA_real_,
+        TRUE ~ coarse_fragment_vol_aux
+      ),
+      # ---
+      # Source of coarse fragments
+      # ---
+      coarse_fragment_vol_source = case_when(
+        grepl("Default", P1_coaf_method) &
+          grepl("Default", prev_method) ~
+          "Default (layer above)",
+        is.na(coarse_fragment_vol_ring) & grepl("Direct", P1_coaf_method) ~
+          "Pit (direct observation)",
+        is.na(coarse_fragment_vol_ring) & grepl("Default", P1_coaf_method) &
+          !is.na(coarse_fragment_vol_aux) &
+          pmin(prev_coaf, 95) > coarse_fragment_vol_aux ~
+          "Estimate (layer above since slightly higher than pit estimate)",
+        is.na(coarse_fragment_vol_ring) & grepl("Default", P1_coaf_method) ~
+          "Pit (estimate)",
+        # Example: P1_coaf_2mm: 98 and coarse_fragment_vol_aux: 103
+        !is.na(coarse_fragment_vol_aux) & coarse_fragment_vol_aux > 95 &
+          # !is.na(coarse_fragment_vol_ring) &
+          grepl("Direct", P1_coaf_method) & P1_coaf_2mm > 95 &
+          P1_coaf_2mm < coarse_fragment_vol_aux ~
+          "Pit (direct observation)",
+        # Example: P1_coaf_2mm: 98 and coarse_fragment_vol_aux: 96
+        !is.na(coarse_fragment_vol_aux) & coarse_fragment_vol_aux > 95 &
+          # !is.na(coarse_fragment_vol_ring) &
+          grepl("Direct", P1_coaf_method) & P1_coaf_2mm > 95 &
+          P1_coaf_2mm > coarse_fragment_vol_aux ~
+          "Rings (2-50 mm) + pit (direct observation) (>50 mm)",
+        # Capping at 95 % for very stony layers
+        # Assumption: in situ 2-50 mm fraction likely underestimated (rather
+        # than >50 mm fraction overestimated)
+        # Regardless of the initial value (P1_coaf_2mm)
+        !is.na(coarse_fragment_vol_aux) & coarse_fragment_vol_aux > 95 &
+          grepl("Direct", P1_coaf_method) ~
+          paste0("Rings (2-50 mm) + pit (direct observation) (>50 mm) - ",
+                 "capped at 95 %"),
+        !is.na(coarse_fragment_vol_aux) & coarse_fragment_vol_aux > 95 &
+          grepl("Default", P1_coaf_method) ~
+          "Rings (2-50 mm) + pit (estimate) (>50 mm) - capped at 95 %",
+        # Assumption: if the layer above is that stony, no reasons to assume
+        # that the layer below that could not be directly observed was
+        # less stony
+        grepl("Default", P1_coaf_method) & !is.na(coarse_fragment_vol_aux) &
+          prev_coaf > 95 ~
+          "Estimate (layer above since slightly higher than pit estimate)",
+        grepl("Default", P1_coaf_method) & !is.na(coarse_fragment_vol_aux) &
+          prev_coaf > coarse_fragment_vol_aux ~
+          "Estimate (layer above since slightly higher than pit estimate)",
+        grepl("Default", P1_coaf_method) & !is.na(coarse_fragment_vol_aux) &
+          !is.na(coarse_fragment_vol_ring) ~
+          "Rings (2-50 mm) + pit (estimate) (>50 mm)",
+        grepl("^M", code_layer) ~
+          "Rings (2-50 mm) + pit (direct observation) (>50 mm)",
+        TRUE ~ NA_character_
+        # # Example: P1_coaf_2mm: 82 and coarse_fragment_vol_aux: 99
+        # !is.na(coarse_fragment_vol_aux) & coarse_fragment_vol_aux > 95 &
+        #   !is.na(coarse_fragment_vol_ring) &
+        #   grepl("Direct", P1_coaf_method) ~
+        #   "Capped at 95 (based on ring + direct observation pit)",
+        # # Example: after correction with coarse_fragment_vol_ring,
+        # # layer above: 82 and coarse_fragment_vol_aux: 81
+      ),
+      # ---
+      # Final coarse fragments
+      # ---
+      # Correct the sum (coarse_fragment_vol_aux) for very stony combinations
+      # Rationale: physical constraint that total cannot exceed ~95-100 %
+      coarse_fragment_vol = ifelse(
+        !is.na(coarse_fragment_vol_aux) & coarse_fragment_vol_aux > 95,
+        # When combined estimate > 95 %:
+        # Assumption: underestimation likely in in situ 2-50 mm fraction
+        # (not an overestimation of >50 mm) because: large stones reduce ring
+        # sampling efficiency, but visual >50 mm estimates are more difficult
+        # to systematically overestimate. When checking the profile photos, it
+        # seems reasonable to assume that the 2-50 mm fraction was simply
+        # underestimated and that it is correct to take the sum of
+        # coarse_fragment_2_50mm_vol and P1_coaf_50mm.
+        case_when(
+          # When both estimates (ring + pit) are > 95, take the minimum
+          # (P1_coaf_2mm is already corrected to be < 100)
+          # E.g., "VUK__35__Jelenka__NA" M61
+          grepl("Direct", P1_coaf_method) & P1_coaf_2mm > 95 ~
+            pmin(P1_coaf_2mm, coarse_fragment_vol_aux),
+          # Other scenario's: cap at 95
+          TRUE ~ 95
+          ),
+        case_when(
+          # For "default" layers below deepest observation (only for the
+          # top layer below the deepest observation, from the the upper side
+          # could in theory possibly still be seen)
+          # If the layer above (directly observed) is higher after correction
+          # with the number of rings, there is no reason to assume the given
+          # layer is not as high as the layer above too, as it was not directly
+          # observed.
+          grepl("Default", P1_coaf_method) & !is.na(coarse_fragment_vol_aux) ~
+            pmax(pmin(prev_coaf, 95), coarse_fragment_vol_aux),
+          TRUE ~ coarse_fragment_vol_aux
+        )
+      )
+    ) %>%
+    # Apply LOCF within mineral layers
+    group_by(plot_code_simple) %>%
+    mutate(
+      coarse_fragment_vol_filled = coarse_fragment_vol,
+    ) %>%
+    # LOCF (downward fill)
+    fill(coarse_fragment_vol_filled, .direction = "down") %>%
+    # Gap-fill using LOCF
+    mutate(
+      coarse_fragment_vol = case_when(
+        # Only for mineral layers with NA
+        grepl("^M", code_layer) & is.na(coarse_fragment_vol) ~
+          coarse_fragment_vol_filled,
+        TRUE ~ coarse_fragment_vol
+      )
+      ) %>%
+    ungroup() %>%
+    rowwise() %>%
+    # TO DO: update based on spatial CF data by VUK
+    mutate(cf_unc = list(add_cf_uncertainty(P1_coaf_2mm,
+                                            P1_coaf_50mm,
+                                            coarse_fragment_vol_ring))) %>%
+    unnest_wider(cf_unc) %>%
+    mutate(
+      # Since coarse_fragment_vol_max is capped at 95 vol%, but
+      # "VUK__35__Jelenka__NA" M61 has 98 vol% CF (based on field estimate)
+      coarse_fragment_vol_max =
+        round(pmax(coarse_fragment_vol, coarse_fragment_vol_max)),
+      # No such cases, but to make sure
+      coarse_fragment_vol_min =
+        round(pmin(coarse_fragment_vol, coarse_fragment_vol_min)),
+      coarse_fragment_vol = round(coarse_fragment_vol)) %>%
+    select(-any_of(c("prev_coaf", "prev_method")))
 
 
-
-
-
-
+df_layers2 <- df_layers
 
 
 ## 4.3. Calculate vol_perc_fine_earth per plot ----
@@ -1654,332 +1811,7 @@ df_plot_fe <- df_layers %>%
 
 # 5. Prepare output datasets ----
 
-## 5.1. Compile inconsistencies ----
-
-### 5.1.1. Check coordinates ----
-
-if (create_inconsistency_report) {
-
-  ### INCONSISTENCY 15 ----
-
-  rule <- paste0("Reported coordinates (Survey123 app) should be within a ",
-                 "reasonable distance from coordinates in HIS metadata file.")
-
-  rule_id <- "15"
-
-
-  # Records with a problem
-
-  source("./src/functions/as_sf.R")
-
-  his_sf <- his %>%
-    rename_with(~ paste0(.x, "_dec"), c(latitude, longitude)) %>%
-    # Filter out "extra" plots without HIS coordinates
-    filter(!is.na(latitude_dec) & !is.na(longitude_dec)) %>%
-    as_sf %>%
-    rename_with(~ paste0(.x, "_his"), c(geometry,
-                                        latitude_dec, longitude_dec)) %>%
-    select(plot_code_simple, ends_with("_his"))
-
-  df_plot_sf <- df_plot %>%
-    filter(wp == "WP2") %>%
-    as_sf %>%
-    rename_with(~ paste0(.x, "_app"), c(geometry,
-                                        latitude_dec, longitude_dec)) %>%
-    select(plot_code_simple, ends_with("_app"))
-
-
-  # Join the two dataframes on plot_code_simple
-  df_coord <- his %>%
-    select(plot_code_simple) %>%
-    inner_join(
-      his_sf,
-      by = "plot_code_simple"
-    ) %>%
-    inner_join(
-      df_plot_sf,
-      by = "plot_code_simple"
-    ) %>%
-    rowwise() %>%
-    mutate(
-      distance_m =
-        round(as.numeric(st_distance(geometry_his, geometry_app)))
-    ) %>%
-    ungroup()
-
-  distance_plaus <- 20000 # m
-
-  recs_problem <- df_coord %>%
-    select(-contains("geometry")) %>%
-    filter(distance_m > distance_plaus)
-
-  inc <- recs_problem %>%
-    mutate(
-      inconsistency_reason = paste0(rule,
-                                    " [current distance: ",
-                                    distance_m, " m]")) %>%
-    mutate(across(everything(), as.character)) %>%
-    # pivot longer to get one row per parameter
-    pivot_longer(
-      cols = c("latitude_dec_his", "longitude_dec_his",
-               "latitude_dec_app", "longitude_dec_app"),
-      names_to = "parameter",
-      values_to = "value"
-    ) %>%
-    left_join(
-      df_plot %>%
-        select(-latitude_dec, -longitude_dec),
-      by = "plot_code_simple") %>%
-    mutate(
-      source = case_when(
-        grepl("_app$", parameter) ~ "Survey123 app",
-        grepl("_his$", parameter) ~ "HIS metadata table"),
-      parameter = case_when(
-        grepl("lat", parameter) ~ "latitude",
-        grepl("lon", parameter) ~ "longitude")) %>%
-    left_join(attribute_catalogue %>%
-                rename(parameter_description = descr,
-                       parameter_unit = unit),
-              by = join_by("parameter" == "column_name")) %>%
-    mutate(
-      parameter_description =
-        paste0(parameter_description, " (according to ", source, ")"),
-      parameter_unit = "g") %>%
-    relocate(parameter_description, parameter_unit, .after = parameter) %>%
-    mutate(
-      # mark unique_inconsistency = TRUE only for the first parameter per record
-      unique_inconsistency =
-        (parameter == "latitude" & source == "HIS metadata table"),
-      team = team_harmonized,
-      plot_code_app = code,
-      res_id_inst = res_id_harmonized,
-      sample_code = NA_character_,
-      rule_id = rule_id) %>%
-    mutate(value = as.character(value)) %>%
-    select(source, team, plot_code_app, res_id_inst, globalid, sample_code,
-           parameter, parameter_description, parameter_unit, value,
-           inconsistency_reason, unique_inconsistency, rule_id)
-
-  inconsistencies <- bind_rows(
-    inconsistencies,
-    inc)
-
-} # End of "if create_inconsistency_report"
-
-
-
-
-
-
-### 5.1.2. Compile all inconsistency reports ----
-
-if (create_inconsistency_report) {
-
-reports <- list(
-  # ---
-  # Function: get_app_data()
-  # ---
-  # INCONSISTENCY 1
-  # "Data expected to be numeric should be numeric."
-  inconsistencies_app_numeric = res_get_app_data$inconsistencies,
-  # ---
-  # Function: get_data_local_lab()
-  # ---
-  # INCONSISTENCY 1
-  # "Data expected to be numeric should be numeric."  #
-  inconsistencies_local_lab_numeric = res_get_data_local_lab$inconsistencies,
-  # ---
-  # Function: app_data_long()
-  # ---
-  # INCONSISTENCY 2
-  # "Forest floor mass should be plausible in comparison with thickness
-  #  and surface area frame"
-  # app_data_long()
-  # INCONSISTENCY 3
-  # "The total number of reported undisturbed samples from the central pit (P1)
-  #  and additional sampling points should not exceed 5 (unlikely). Please
-  #  check how many undisturbed samples you took at the given depth."
-  # INCONSISTENCY 4
-  # "Identical bedrock depth values are reported across sampling points (P2–9).
-  #  This suggests the values may have been copied from P1 rather than
-  #  independently observed. Please confirm how to interpret this.
-  # INCONSISTENCY 5
-  # "Bedrock depth is missing (NA) in some sampling points (P1-5), while others
-  #  report shallow bedrock. Please confirm that all missing values are
-  #  correctly marked as NA (i.e., bedrock below 100 cm)"
-  # INCONSISTENCY 6
-  # "Volumetric percentage of coarse fragments > 50 mm should not exceed that
-  #  > 2 mm. You may have only indicated coarse fragments between 2–50 mm
-  #  under > 2 mm."
-  # INCONSISTENCY 7
-  # "Undisturbed mass should be plausible in comparison with
-  #  number and volume of rings"
-  # app_data_long()
-  # INCONSISTENCY 8
-  # "Subsample(s) forest floor for lab cannot weigh more than sum of
-  #  all reported forest floor masses across sampling points"
-  # INCONSISTENCY 9
-  # "For depths below the deepest reported bedrock depth no samples are
-  #  expected to be taken"
-  # INCONSISTENCY 10
-  # "Samples weighing more than 0 g are expected to show 'sample collected'"
-  # INCONSISTENCY 11
-  # "Reported slope is high and may have been accidentally reported as a
-  #  percentage instead of decimal degrees. Please confirm the unit."
-  # INCONSISTENCY 12
-  # "P1 reports 100 vol% coarse fragments for this layer, while (disturbed)
-  #  samples were collected at other points in the same layer, indicating that
-  #  fine earth was present. This may reflect spatial variation. The plot-
-  #  representative coarse fragment content will be capped at minimum 80 vol%
-  #  so that this layer contributes to the carbon stock."
-  inconsistencies_app_long = res_app_data_long$inconsistencies,
-  # ---
-  # Script: preprocessing_and_quality_check.R
-  # ---
-  # INCONSISTENCY 13
-  # "Mass of subsample after drying in local lab is higher than mass of
-  #  field-moist subsample (after mixing)."
-  # INCONSISTENCY 14
-  # "Mass recorded after drying in local lab must roughly correspond with
-  #  mass of OFH sample received by central lab"
-  # INCONSISTENCY 15
-  # "Reported coordinates (Survey123 app) should be within a
-  #  reasonable distance from coordinates in HIS metadata file."
-  inconsistencies_preprocessing = inconsistencies
-) %>%
-  # Remove NULL (for functions for which no report is created)
-  purrr::compact()
-
-
-
-
-# Bind them together
-
-inc_report <- bind_rows(reports) %>%
-  as_tibble %>%
-  # Remove WP3 inconsistencies
-  left_join(df_plot %>%
-              select(globalid, wp),
-            by = "globalid") %>%
-  filter(wp == "WP2") %>%
-  select(-wp) %>%
-  rename(plot_code = plot_code_app) %>%
-  mutate(
-    # Institute that does the soil sampling
-    team = case_when(
-      team %in% c("BFNP_EXTRA", "NPS") ~ "BFNP",
-      team == "LWF" &
-        res_id_inst == "x" ~ "BFNP",
-      team == "DISAFA - UNITO" ~ "UNITO",
-      team == "FVA-BW" ~ "NWFVA",
-      team == "INCDS" ~ "UNITBV",
-      team %in% c("UNIUD/HSI", "UNIUD/HSI_EXTRA",
-                  "UNIUD_EXTRA") ~ "UNIUD",
-      team %in% c("URK", "WULS") ~ "IBL",
-      team %in% c("HUN-REN Centre for Ecological Research/VUKOZ(VUK)",
-                  "VUKOZ(VUK)") ~
-        "VUK",
-      TRUE ~ team)) %>%
-  mutate(
-    partner_feedback = NA_character_,
-    partner_corrected_value = NA_character_,
-    partner_remark = NA_character_) %>%
-  arrange(team)
-
-# Remove inconsistency with unexpected deeper samples in code DE-BGD-NP-1-F059-1
-# (based on e-mail from partner)
-
-# You can link the inconsistencies with the app records using
-# globalid (without curly brackets and lowercase)
-
-} # End of "if create_inconsistency_report"
-
-
-
-
-
-### 5.1.3. Export ----
-
-if (create_inconsistency_report) {
-
-dir <- paste0("./output/partner_inconsistencies/",
-              as.character(format(Sys.Date(), format = "%Y%m%d")), "/")
-
-if (!dir.exists(dir)) {
-  dir.create(dir)
-}
-
-
-write.table(inc_report,
-            file = paste0(dir,
-                          "partner_inconsistency_report_all.csv"),
-            row.names = FALSE,
-            na = "",
-            sep = ";",
-            dec = ".")
-
-# Per partner
-
-partners_inc <- unique(inc_report$team)
-
-for (i in seq_along(partners_inc)) {
-
-  inc_report_i <- inc_report %>%
-    filter(team == partners_inc[i])
-
-  wb <- createWorkbook()
-  addWorksheet(wb, "Inconsistency report")
-  addWorksheet(wb, "Attribute catalogue")
-  # Ideally, there would have to be a description of all attributes (columns)
-
-  writeData(wb, 1, inc_report_i)
-  addFilter(wb, 1, rows = 1, cols = 1:ncol(inc_report_i))
-  dataValidation(wb, 1,
-                 cols = which(names(inc_report_i) == "partner_feedback"),
-                 rows = seq(2, nrow(inc_report_i) + 1),
-                 type = "list",
-                 value = '"1 - The reported value is correct, 2 - The correct value is added"')
-
-  freezePane(wb, 1, firstActiveRow = 2, firstActiveCol = 1)
-  # writeData(wb, 2, xxx) # This should be some table with description of
-  # the columns in inc_report
-
-  openxlsx::saveWorkbook(wb,
-                         file =
-                           paste0(dir,
-                                  tolower(gsub("[- ]", "", partners_inc[i])),
-                                  "_partner_inconsistency_report.xlsx"),
-                         overwrite = TRUE)
-
-} # End of "for i in partners"
-
-} # End of "if create_inconsistency_report"
-
-
-
-
-
-
-
-
-
-
-## 5.2. Compile and tidy pre-processed soil physicochemical data ----
-
-# Remove unnecessary columns + Add lab data
-
-# TO DO: in some cases, it will be necessary to LOCF (or spline?) the analyses
-# from the layer above, when no samples were sent to the lab for the lowest
-# layer (e.g., M36 of BGD-NP__1__Berchtesgaden National Park__F048)
-# Splines (?) for layer with absent disturbed and undisturbed samples,
-#  e.g., "DISAFA - UNITO__14__Alpe Cusogna__NA" M61
-
-# TO DO (WBL dist + results RF analytical lab):
-# "NWFVA__06-025__Kinzigaue__b": four disturbed below-ground samples contained
-# no indication of depth. During lab pretreatment, they were randomly allocated
-# to a certain depth, but this needs to be corrected - probably best assuming
-# a decreasing SOC with increasing depth...
-# Also for 03-083 based on data?
+## 5.1. Compile and tidy pre-processed soil physicochemical data ----
 
 # Note:
 # LWF__65_a__Friedergries__NA OFH_carbon has been retaken during the second
@@ -1987,38 +1819,16 @@ for (i in seq_along(partners_inc)) {
 # (which were removed before lab analysis)
 # That original sample is named "DE__LWF__65_a__NA__NA__OFH_carbon" in the
 # RF (V-25V006-04), while the new (better) sample is named
-# "DE__LWF__65_a__NA__NA__OFH_carbon_b" → better to proceed with these results
-
-# VUK__1__Zofin__b OFH and VUK__1__Zofin__c OFH are switched at central lab
-# INBO! (note: forest floor masses already adjusted in section 3.2)
-
-# In the end, you can make the dataframe(s) a bit more neat. You could
-# make one dataframe with metadata per plot (e.g., WRB, slope, weather...)
-# (like df_plot at this point) and one with data per depth layer.
-# Several columns (e.g. those that were used to double-check other values
-# are not needed anymore). Basically, you need columns to identify the
-# plot and layer, the final calculated values and their uncertainties.
-# (similar to "layer 1" of ICP F)
-
-# Do we report those original masses (in addition to relative percentages)?
-# select(-mass_dry_leaves, -mass_dry_twigs_medium, -mass_dry_twigs_small)
-
-# TO DO:
-# Bulk density using pedotransfer for plots for which no undisturbed samples
-# could be taken, e.g., "BGD-NP__1__Berchtesgaden National Park__F016"
-
-# TO DO: add TOC of HF layer Seeliwald
+# "DE__LWF__65_a__NA__NA__OFH_carbon_b" → we proceed with these results
 
 
 
 
+### 5.1.1. Compile df_layers ----
 
+  # Arrange, add lab data and gap-fill
 
-
-
-### 5.2.1. Compile df_layers ----
-
-  # Arange and add lab data
+  source("./src/functions/classify_texture.R")
 
   df_layers <- df_layers %>%
     # Filter for WP2
@@ -2031,12 +1841,12 @@ for (i in seq_along(partners_inc)) {
       coarse_fragment_vol_max =
         if (!"coarse_fragment_vol_max" %in% names(.)) NA_real_
       else coarse_fragment_vol_max,
-    ) %>%
-    rename(coarse_fragment_vol_p1 = P1_coaf_2mm,
-           coarse_fragment_vol_p1_50mm = P1_coaf_50mm) %>%
+      coarse_fragment_vol_p1 = P1_coaf_2mm,
+      coarse_fragment_vol_p1_50mm = P1_coaf_50mm
+      ) %>%
     # Add composed_site_id
     left_join(
-      df_plot %>%
+      df_plot_out %>%
         select(plot_code_simple, composed_site_id),
       by = "plot_code_simple") %>%
     # Add lab data
@@ -2044,45 +1854,110 @@ for (i in seq_along(partners_inc)) {
       data_lab %>%
         select(-any_of(c("institute_sampling", "sample_code", "sample_id"))),
       by = join_by("plot_code_simple", "code_layer", "sample_id_simple")
-    )
+    ) %>%
+    # Classify texture data
+    classify_texture() %>%
+    mutate(
+      # Calculate C to N ratio (m/m; organic C to total N)
+      # This should be in a plausible range (1 to 100)
+      # NA if any value below LOQ
+      c_to_n_ratio =
+        ifelse(!is.na(c_organic_total) &
+                 !is.na(n_total),
+               case_when(
+                 # Both values above LOQ (g kg-1)
+                 # (LOQ for TOC depends on the presence of TIC)
+                 (((!is.na(c_inorganic_total) &
+                     c_inorganic_total > 0 &
+                     c_organic_total >= (0.5 - 0.1)) |
+                     (c_organic_total >= 0.5)) &
+                   (n_total >= 0.1)) &
+                   # C/N ratios seem implausible when the minimum bound of TOC
+                   # is 0 (always occurs when TOC is low and TIC is high
+                   # and the uncertainty range of TOC therefore wide)
+                   (c_organic_total_min > 1e-6) ~
+                   # Stoichiometric ratio (m/m)
+                   round(c_organic_total / n_total, 2),
+                 # NA if any value below LOQ
+                 TRUE ~ NA_real_),
+               NA_real_
+               ),
+      c_to_n_ratio_min =
+        ifelse(!is.na(c_to_n_ratio),
+               # Stoichiometric ratio (m/m) - minimum
+               round(c_organic_total_min / n_total_max, 2),
+               NA_real_
+        ),
+      c_to_n_ratio_max =
+        ifelse(!is.na(c_to_n_ratio),
+               # Stoichiometric ratio (m/m) - maximum
+               round(c_organic_total_max / n_total_min, 2),
+               NA_real_
+        ))
 
 
-  cols_layers <- c(
-  )
 
-  # Which of those columns do not exist?
-  assertthat::assert_that(
-    identical(
-      cols_layers[which(!cols_layers %in% names(df_layers))],
-      character(0)))
+# Gap-fill
 
-  # Ordered vector
-  cols_layers_ordered <- unlist(lapply(cols_layers, function(x) {
-    c(
-      x,
-      paste0(x, "_min"),
-      paste0(x, "_max"))
-  }))
+  source("./src/functions/bd_ptf.R")
 
-  # Keep only columns that actually exist in df_layers
-  cols_layers_ordered <- cols_layers_ordered[
-    cols_layers_ordered %in% names(df_layers)
-  ]
+  df_layers_filled <- df_layers %>%
+    rowwise() %>%
+    # TO DO:
+    # TBD: is it necessary to apply the ptf for c_organic_total_min/max instead?
+    mutate(bd_ptf = list(bd_ptf(c_organic_total))) %>%
+    unnest_wider(bd_ptf) %>%
+    mutate(
+      # Bulk density
+      bulk_density_source = case_when(
+        !is.na(bulk_density_undist) ~ "Observed (rings)",
+        !is.na(bulk_density_dist) ~ "Observed (sampling frames)",
+        !is.na(bulk_density_ptf) ~ "Pedotransfer"
+      ),
+      bulk_density = coalesce(bulk_density,
+                              bulk_density_ptf),
+      bulk_density_min = coalesce(bulk_density_min,
+                                  bulk_density_ptf_min),
+      bulk_density_max = coalesce(bulk_density_min,
+                                  bulk_density_ptf_max),
+      # Organic carbon
+      c_organic_total_source = case_when(
+        plot_code_simple == "WSL__25__Seeliwald__NA" & code_layer == "OL" ~
+          "Mean for HF (fibric peat; ICP Forests Level I)",
+        !is.na(c_organic_total) ~ "Measured"),
+      c_organic_total = case_when(
+        # HF (mean ICP Forests Level I for HF)
+        plot_code_simple == "WSL__25__Seeliwald__NA" & code_layer == "OL" ~
+          445.64,
+        TRUE ~ c_organic_total),
+      c_organic_total_min = case_when(
+        # Mean - stdev
+        plot_code_simple == "WSL__25__Seeliwald__NA" & code_layer == "OL" ~
+          445.64 - 65.05,
+        TRUE ~ c_organic_total_min),
+      c_organic_total_max = case_when(
+        # Mean + stdev
+        plot_code_simple == "WSL__25__Seeliwald__NA" & code_layer == "OL" ~
+          445.64 + 65.05,
+        TRUE ~ c_organic_total_max))
 
-  # Select columns in desired order
-  wp2_layer_data <- df_layers[, cols_layers_ordered]
 
 
 
 
 
-### 5.2.2. Compile df_plot ----
+### 5.1.2. Compile df_plot ----
 
-  # Arange data
+  # Arrange data
 
-  df_plot <- df_plot %>%
+  source("./src/functions/add_metadata.R")
+
+  df_plot <- df_plot_out %>%
     # Filter for WP2
     filter(wp == "WP2") %>%
+    # Add other metadata (MAT, MAP, altitude, biogeographical region,
+    # parent material)
+    add_metadata %>%
     # Create columns if missing
     mutate(
       parent_material =
@@ -2116,7 +1991,317 @@ for (i in seq_along(partners_inc)) {
       by = "plot_code_simple")
 
 
+
+
+
+
+### 5.1.3. Milestone 12 ----
+
+# - Remove gap-filled data
+#   (bulk density based on pedotransfer, TOC based on HF mean for Seeliwald)
+# - Remove EXTRA sites
+# - Remove "min" and "max" columns?
+
+path_m12 <- "./output/project_requests/m12/"
+
+timestamp <- gsub("-", "", as.character(Sys.Date()))
+version <- "v1.0"
+
+
+##### Layer data ----
+
+cols_layers <- c(
+  # "wp",
+  "institute_sampling",
+  "composed_site_id",
+  "plot_code_simple",
+  "layer_number", "code_layer",
+  "depth_top", "depth_bottom", "depth_bottom_bedrock",
+  "thickness",
+  "coarse_fragment_vol",
+  # Do not include original sources for coarse_fragment_vol
+  # "coarse_fragment_vol_p1",  #P1_coaf_2mm
+  # "coarse_fragment_vol_p1_50mm", #P1_coaf_50mm
+  # "coarse_fragment_vol_ring",
+  "bulk_density",
+  "areal_mass",
+  "perc_dry_leaves",
+  "perc_dry_twigs_medium",
+  "perc_dry_twigs_small",
+  "c_organic_total",
+  "n_total",
+  "c_inorganic_total",
+  # "c_to_n_ratio",
+  "ph_cacl2",
+  "clay",
+  "silt",
+  "sand",
+  # "texture_class",
+  "properties" # Keep for now (internal)
+)
+
+# Which of those columns do not exist?
+assertthat::assert_that(
+  identical(
+    cols_layers[which(!cols_layers %in% names(df_layers))],
+    character(0)))
+
+# # Ordered vector
+# cols_layers <- unlist(lapply(cols_layers, function(x) {
+#   c(
+#     x,
+#     paste0(x, "_min"),
+#     paste0(x, "_max"))
+# }))
+
+# Keep only columns that actually exist in df_layers
+cols_layers <- cols_layers[
+  cols_layers %in% names(df_layers)
+]
+
+# Select columns in desired order
+wp2_layer_data <- df_layers[, cols_layers]
+
+
+
+write.table(wp2_layer_data %>%
+              filter(!grepl("EXTRA", plot_code_simple)),
+            file = paste0(path_m12,
+                          "WILDCARD_M12_wp2_layer_data_",
+                          timestamp, "_EVINBO_", version, ".csv"),
+            row.names = FALSE,
+            na = "",
+            sep = ";",
+            dec = ".")
+
+source("./src/functions/create_attribute_catalogue.R")
+create_attribute_catalogue(wp2_layer_data,
+                           path_to_save = paste0(path_m12,
+                                                 "WILDCARD_M12_wp2_layer_data_",
+                                                 "EVINBO_"))
+
+#### Plot data ----
+
 cols_plot <- c(
+  # "wp",
+  "institute_sampling",
+  "composed_site_id",
+  "plot_code_simple",
+  # "res_id_inst",
+  "reserve_name",
+  "sub_id",
+  "plot_id", # (matching tree database)
+  "site_type",
+  "latitude_dec", # Not necessary to truncate this to the minute level for now
+  "longitude_dec",  # Not necessary to truncate this to the minute level for now
+  "hor_accuracy",
+  "survey_date",
+  "air_temperature",
+  "actual_weather",
+  "past_weather",
+  "soil_condition",
+  "soil_dist",
+  "macrorelief",
+  "slope_type",
+  "slope_deg",
+  "depth_bedrock",
+  "vol_perc_fine_earth",
+  "humus_form",
+  "wrb_ref_soil_group",
+  "wrb_qualifier_1", # (not mandatory)
+  "parent_material",
+  # "particle_density", # (weighted mean per plot) Not needed
+  "gen_observtn", # Keep for now (internal use)
+  "other_remarks", # Keep for now (internal use)
+  "other_observtn" # Keep for now (internal use)
+  # "eftc", # his_eftc
+  # "eft", # eea_fortype
+  # "his_soil_water",
+  # "his_soil_nutrient",
+  # "tsa_derived", #derived_tsa
+  # "tsa_class" #his_tsaclass
+  # -
+  # "year_reserve", Probably not needed for the final dataset
+  # "year_abandonment" Probably not needed for the final dataset
+)
+
+
+# Which of those columns do not exist?
+assertthat::assert_that(
+  identical(
+    cols_plot[which(!cols_plot %in% names(df_plot))],
+    character(0)))
+
+# # Ordered vector
+# cols_plot <- unlist(lapply(cols_plot, function(x) {
+#   c(
+#     x,
+#     paste0(x, "_min"),
+#     paste0(x, "_max"))
+# }))
+
+# Keep only columns that actually exist in df_layers
+cols_plot <- cols_plot[
+  cols_plot %in% names(df_plot)
+]
+
+# Select columns in desired order
+wp2_plot_data <- df_plot[, cols_plot]
+
+
+
+
+
+write.table(wp2_plot_data %>%
+              filter(!grepl("EXTRA", plot_code_simple)),
+            file = paste0(path_m12,
+                          "WILDCARD_M12_wp2_plot_data_",
+                          timestamp, "_EVINBO_", version, ".csv"),
+            row.names = FALSE,
+            na = "",
+            sep = ";",
+            dec = ".")
+
+source("./src/functions/create_attribute_catalogue.R")
+create_attribute_catalogue(wp2_plot_data,
+                           path_to_save = paste0(path_m12,
+                                                 "WILDCARD_M12_wp2_plot_data_",
+                                                 "EVINBO_"))
+
+
+
+
+### 5.1.4. Clean data ----
+#          Gap-filled data - to share with project partners
+#          Remove EXTRA plots BFNP but not those of UNIUD
+
+path_clean <- "./data/clean_data/"
+
+timestamp <- gsub("-", "", as.character(Sys.Date()))
+version <- "v1.0"
+
+
+##### Layer data ----
+
+cols_layers <- c(
+  # "wp",
+  "institute_sampling",
+  "composed_site_id",
+  "plot_code_simple",
+  "layer_number", "code_layer",
+  "depth_top", "depth_bottom", "depth_bottom_bedrock",
+  "thickness",
+  "coarse_fragment_vol",
+  # Do not include original sources for coarse_fragment_vol
+  # "coarse_fragment_vol_p1",  #P1_coaf_2mm
+  # "coarse_fragment_vol_p1_50mm", #P1_coaf_50mm
+  # "coarse_fragment_vol_ring",
+  "bulk_density",
+  "areal_mass",
+  "perc_dry_leaves",
+  "perc_dry_twigs_medium",
+  "perc_dry_twigs_small",
+  "c_organic_total",
+  "n_total",
+  "c_inorganic_total",
+  "c_to_n_ratio",
+  "ph_cacl2",
+  "clay",
+  "silt",
+  "sand",
+  "texture_class",
+  "properties" # Keep for now (internal)
+)
+
+# Which of those columns do not exist?
+assertthat::assert_that(
+  identical(
+    cols_layers[which(!cols_layers %in% names(df_layers_filled))],
+    character(0)))
+
+# Ordered vector
+cols_layers <- unlist(lapply(cols_layers, function(x) {
+  c(
+    x,
+    paste0(x, "_min"),
+    paste0(x, "_max"),
+    paste0(x, "_source"))
+}))
+
+# Keep only columns that actually exist in df_layers
+cols_layers <- cols_layers[
+  cols_layers %in% names(df_layers_filled)
+]
+
+# Select columns in desired order
+wp2_layer_data <- df_layers_filled[, cols_layers]
+
+
+
+write.table(wp2_layer_data %>%
+              filter(!(grepl("EXTRA", plot_code_simple) &
+                         institute_sampling == "BFNP")),
+            file = paste0(path_clean,
+                          "WILDCARD_wp2_layer_data_",
+                          timestamp, "_EVINBO_", version, ".csv"),
+            row.names = FALSE,
+            na = "",
+            sep = ";",
+            dec = ".")
+
+source("./src/functions/create_attribute_catalogue.R")
+create_attribute_catalogue(wp2_layer_data,
+                           path_to_save = paste0(path_clean,
+                                                 "WILDCARD_wp2_layer_data_",
+                                                 "EVINBO_"))
+
+#### Plot data ----
+
+cols_plot <- c(
+  # "wp",
+  "institute_sampling",
+  "composed_site_id",
+  "plot_code_simple",
+  # "res_id_inst",
+  "reserve_name",
+  "sub_id",
+  "plot_id", # (matching tree database)
+  "site_type",
+  "latitude_dec", # Not necessary to truncate this to the minute level for now
+  "longitude_dec",  # Not necessary to truncate this to the minute level for now
+  "hor_accuracy",
+  "survey_date",
+  "air_temperature",
+  "actual_weather",
+  "past_weather",
+  "soil_condition",
+  "soil_dist",
+  "macrorelief",
+  "slope_type",
+  "slope_deg",
+  "depth_bedrock",
+  "vol_perc_fine_earth",
+  "humus_form",
+  "wrb_ref_soil_group",
+  "wrb_qualifier_1", # (not mandatory)
+  "parent_material",
+  # "particle_density", # (weighted mean per plot) Not needed
+  "mat",
+  "map",
+  "altitude",
+  "biogeographical_region",
+  "gen_observtn", # Keep for now (internal use)
+  "other_remarks", # Keep for now (internal use)
+  "other_observtn" # Keep for now (internal use)
+  # "eftc", # his_eftc
+  # "eft", # eea_fortype
+  # "his_soil_water",
+  # "his_soil_nutrient",
+  # "tsa_derived", #derived_tsa
+  # "tsa_class" #his_tsaclass
+  # -
+  # "year_reserve", Probably not needed for the final dataset
+  # "year_abandonment" Probably not needed for the final dataset
 )
 
 
@@ -2127,7 +2312,7 @@ assertthat::assert_that(
     character(0)))
 
 # Ordered vector
-cols_plot_ordered <- unlist(lapply(cols_plot, function(x) {
+cols_plot <- unlist(lapply(cols_plot, function(x) {
   c(
     x,
     paste0(x, "_min"),
@@ -2135,46 +2320,25 @@ cols_plot_ordered <- unlist(lapply(cols_plot, function(x) {
 }))
 
 # Keep only columns that actually exist in df_layers
-cols_plot_ordered <- cols_plot_ordered[
-  cols_plot_ordered %in% names(df_plot)
+cols_plot <- cols_plot[
+  cols_plot %in% names(df_plot)
 ]
 
 # Select columns in desired order
-wp2_plot_data <- df_plot[, cols_plot_ordered]
+wp2_plot_data <- df_plot[, cols_plot]
 
 
 
 
 
 
-### 5.2.3. Milestone 12 ----
-
-# - Remove gap-filled data
-#   (bulk density based on pedotransfer, TOC based on HF mean for Seeliwald)
-# - Remove EXTRA sites
-# - Remove "min" and "max" columns?
-
-# layer data
-
-path_m12 <- "./output/project_requests/m12/"
-
-write.table(wp2_layer_data %>%
-              filter(!grepl("EXTRA", plot_code_simple)),
-            file = paste0(path_m12, "wp2_layer_data.csv"),
-            row.names = FALSE,
-            na = "",
-            sep = ";",
-            dec = ".")
-
-source("./src/functions/create_attribute_catalogue.R")
-create_attribute_catalogue(wp2_layer_data,
-                           path_to_save = paste0(path_m12, "wp2_layer_data_"))
-
-# plot data
 
 write.table(wp2_plot_data %>%
-              filter(!grepl("EXTRA", plot_code_simple)),
-            file = paste0(path_m12, "wp2_plot_data.csv"),
+              filter(!(grepl("EXTRA", plot_code_simple) &
+                         institute_sampling == "BFNP")),
+            file = paste0(path_clean,
+                          "WILDCARD_wp2_plot_data_",
+                          timestamp, "_EVINBO_", version, ".csv"),
             row.names = FALSE,
             na = "",
             sep = ";",
@@ -2182,25 +2346,221 @@ write.table(wp2_plot_data %>%
 
 source("./src/functions/create_attribute_catalogue.R")
 create_attribute_catalogue(wp2_plot_data,
-                           path_to_save = paste0(path_m12, "wp2_plot_data_"))
+                           path_to_save = paste0(path_clean,
+                                                 "WILDCARD_wp2_plot_data_",
+                                                 "EVINBO_"))
+
+
+# TO DOs stocks
+# - calculate stocks VUK for both the standard P1 coarse fragments, and the
+#   average coarse fragments across the plot, to see the sensitivity.
+# - calculate stocks for coarse fragments 2-50 mm from both lab and field
+#   estimates, to see the sensitivity
+# - calculate the stocks for uncapped slopes and capped at 40 °C, to see
+#   the sensitivity
+# - calculate stocks, concentrations, and maybe TOC * bulk_density of M01,
+#   to see the sensitivity
+
+
+# Note:
+# - "Clean data" were shared as metadata for eDNA
+
+
+
+## 5.2. Compile data flammability analysis ----
 
 
 
 
-#
-# write.table(wp3_sites,
-#             file = "./data/wp3_sites.csv",
-#             row.names = FALSE,
-#             na = "",
-#             sep = ";",
-#             dec = ".")
-
-
-## 5.3. Compile data flammability analysis ----
 
 
 
-## 5.4. Compile metadata for eDNA ----
+## 5.3. Compile inconsistencies ----
 
-  # TO DO: metadata (weather) for eDNA are different for three NW-FVA plots
-  # (resampling due to loss eDNA samples)
+### 5.3.1. Compile all inconsistency reports ----
+
+if (create_inconsistency_report) {
+
+  reports <- list(
+    # ---
+    # Function: get_app_data()
+    # ---
+    # INCONSISTENCY 1
+    # "Data expected to be numeric should be numeric."
+    inconsistencies_app_numeric = res_get_app_data$inconsistencies,
+    # ---
+    # Function: get_data_local_lab()
+    # ---
+    # INCONSISTENCY 1
+    # "Data expected to be numeric should be numeric."  #
+    inconsistencies_local_lab_numeric = res_get_data_local_lab$inconsistencies,
+    # ---
+    # Function: app_data_long()
+    # ---
+    # INCONSISTENCY 2
+    # "Forest floor mass should be plausible in comparison with thickness
+    #  and surface area frame"
+    # app_data_long()
+    # INCONSISTENCY 3
+    # "The total number of reported undisturbed samples from the central pit (P1)
+    #  and additional sampling points should not exceed 5 (unlikely). Please
+    #  check how many undisturbed samples you took at the given depth."
+    # INCONSISTENCY 4
+    # "Identical bedrock depth values are reported across sampling points (P2–9).
+    #  This suggests the values may have been copied from P1 rather than
+    #  independently observed. Please confirm how to interpret this.
+    # INCONSISTENCY 5
+    # "Bedrock depth is missing (NA) in some sampling points (P1-5), while others
+    #  report shallow bedrock. Please confirm that all missing values are
+    #  correctly marked as NA (i.e., bedrock below 100 cm)"
+    # INCONSISTENCY 6
+    # "Volumetric percentage of coarse fragments > 50 mm should not exceed that
+    #  > 2 mm. You may have only indicated coarse fragments between 2–50 mm
+    #  under > 2 mm."
+    # INCONSISTENCY 7
+    # "Undisturbed mass should be plausible in comparison with
+    #  number and volume of rings"
+    # app_data_long()
+    # INCONSISTENCY 8
+    # "Subsample(s) forest floor for lab cannot weigh more than sum of
+    #  all reported forest floor masses across sampling points"
+    # INCONSISTENCY 9
+    # "For depths below the deepest reported bedrock depth no samples are
+    #  expected to be taken"
+    # INCONSISTENCY 10
+    # "Samples weighing more than 0 g are expected to show 'sample collected'"
+    # INCONSISTENCY 11
+    # "Reported slope is high and may have been accidentally reported as a
+    #  percentage instead of decimal degrees. Please confirm the unit."
+    # INCONSISTENCY 12
+    # "P1 reports 100 vol% coarse fragments for this layer, while (disturbed)
+    #  samples were collected at other points in the same layer, indicating that
+    #  fine earth was present. This may reflect spatial variation. The plot-
+    #  representative coarse fragment content will be capped at minimum 80 vol%
+    #  so that this layer contributes to the carbon stock."
+    inconsistencies_app_long = res_app_data_long$inconsistencies,
+    # ---
+    # Script: preprocessing_and_quality_check.R
+    # ---
+    # INCONSISTENCY 13
+    # "Mass of subsample after drying in local lab is higher than mass of
+    #  field-moist subsample (after mixing)."
+    # INCONSISTENCY 14
+    # "Mass recorded after drying in local lab must roughly correspond with
+    #  mass of OFH sample received by central lab"
+    # INCONSISTENCY 15
+    # "Reported coordinates (Survey123 app) should be within a
+    #  reasonable distance from coordinates in HIS metadata file."
+    inconsistencies_preprocessing = inconsistencies
+  ) %>%
+    # Remove NULL (for functions for which no report is created)
+    purrr::compact()
+
+
+
+
+  # Bind them together
+
+  inc_report <- bind_rows(reports) %>%
+    as_tibble %>%
+    # Remove WP3 inconsistencies
+    left_join(df_plot_out %>%
+                select(globalid, wp),
+              by = "globalid") %>%
+    filter(wp == "WP2") %>%
+    select(-wp) %>%
+    rename(plot_code = plot_code_app) %>%
+    mutate(
+      # Institute that does the soil sampling
+      team = case_when(
+        team %in% c("BFNP_EXTRA", "NPS") ~ "BFNP",
+        team == "LWF" &
+          res_id_inst == "x" ~ "BFNP",
+        team == "DISAFA - UNITO" ~ "UNITO",
+        team == "FVA-BW" ~ "NWFVA",
+        team == "INCDS" ~ "UNITBV",
+        team %in% c("UNIUD/HSI", "UNIUD/HSI_EXTRA",
+                    "UNIUD_EXTRA") ~ "UNIUD",
+        team %in% c("URK", "WULS") ~ "IBL",
+        team %in% c("HUN-REN Centre for Ecological Research/VUKOZ(VUK)",
+                    "VUKOZ(VUK)") ~
+          "VUK",
+        TRUE ~ team)) %>%
+    mutate(
+      partner_feedback = NA_character_,
+      partner_corrected_value = NA_character_,
+      partner_remark = NA_character_) %>%
+    arrange(team)
+
+  # Remove inconsistency with unexpected deeper samples in code DE-BGD-NP-1-F059-1
+  # (based on e-mail from partner)
+
+  # You can link the inconsistencies with the app records using
+  # globalid (without curly brackets and lowercase)
+
+} # End of "if create_inconsistency_report"
+
+
+
+
+
+### 5.3.2. Export ----
+
+if (create_inconsistency_report) {
+
+  dir <- paste0("./output/partner_inconsistencies/",
+                as.character(format(Sys.Date(), format = "%Y%m%d")), "/")
+
+  if (!dir.exists(dir)) {
+    dir.create(dir)
+  }
+
+
+  write.table(inc_report,
+              file = paste0(dir,
+                            "partner_inconsistency_report_all.csv"),
+              row.names = FALSE,
+              na = "",
+              sep = ";",
+              dec = ".")
+
+  # Per partner
+
+  partners_inc <- unique(inc_report$team)
+
+  for (i in seq_along(partners_inc)) {
+
+    inc_report_i <- inc_report %>%
+      filter(team == partners_inc[i])
+
+    wb <- createWorkbook()
+    addWorksheet(wb, "Inconsistency report")
+    addWorksheet(wb, "Attribute catalogue")
+    # Ideally, there would have to be a description of all attributes (columns)
+
+    writeData(wb, 1, inc_report_i)
+    addFilter(wb, 1, rows = 1, cols = 1:ncol(inc_report_i))
+    dataValidation(wb, 1,
+                   cols = which(names(inc_report_i) == "partner_feedback"),
+                   rows = seq(2, nrow(inc_report_i) + 1),
+                   type = "list",
+                   value = '"1 - The reported value is correct, 2 - The correct value is added"')
+
+    freezePane(wb, 1, firstActiveRow = 2, firstActiveCol = 1)
+    # writeData(wb, 2, xxx) # This should be some table with description of
+    # the columns in inc_report
+
+    openxlsx::saveWorkbook(wb,
+                           file =
+                             paste0(dir,
+                                    tolower(gsub("[- ]", "", partners_inc[i])),
+                                    "_partner_inconsistency_report.xlsx"),
+                           overwrite = TRUE)
+
+  } # End of "for i in partners"
+
+} # End of "if create_inconsistency_report"
+
+
+
+
