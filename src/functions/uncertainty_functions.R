@@ -21,11 +21,14 @@ add_cf_uncertainty <- function(coaf_2mm,
 
   uncertainty_field <- function(cf) {
 
-    # Within-site uncertainty
-    within_site_sd <- 5 + 0.15 * cf
-      # ifelse(cf <= 20, 0.75 * cf, 15)
+    # 1.1.1. Within-site uncertainty
+    # This function was estimated based on coarse fragments data
+    # per sampling point (5 profiles per site) by VUK
 
-    # Measurement uncertainty
+    within_site_sd <- 5 + 0.15 * cf
+
+    # 1.1.2. Measurement uncertainty
+    # (Based on the  WRB scheme to visually estimate coarse fragments)
     measurement_unc <- case_when(
       cf <= 5 ~ 1,
       cf <= 30 ~ 2.5,
@@ -126,6 +129,10 @@ add_cf_uncertainty <- function(coaf_2mm,
 add_bd_uncertainty <- function(bd, uncertainty_sd = 125) {
 
   # Within-site uncertainty
+  # Default value of 125 kg m-3 was determined based on data from
+  # INBO test sampling event (2024) per sampling point (i.e.,
+  # with 5 bulk density rings per site x depth)
+
   return(list(
     bulk_density_min = round(pmax(0, bd - uncertainty_sd), 1),
     bulk_density_max = round(pmin(2650, bd + uncertainty_sd), 1)
