@@ -2516,6 +2516,10 @@ ggsave(filename = paste0("mat_per_humus_form",
 
 
 
+
+
+
+
 ## Texture ----
 
 tex_data <- df_layers %>%
@@ -2567,13 +2571,40 @@ p <- df_plot %>%
   plot_distr_simple(unit = "cm",
                     plot_title = paste0("**Bedrock depth** (cm)"))
 
-ggsave(filename = paste0("depth_bedrock",
+ggsave(filename = paste0("depth_bedrock_vert",
                          ".png"),
        plot = p,
        path = paste0("./output/data_quality/undisturbed/"),
        dpi = 500,
        width = 6.81,
        height = 3)
+
+
+p <- df_plot %>%
+  filter(!grepl("EXTRA", plot_code_simple)) %>%
+  mutate(
+    plot_code_simple = reorder(plot_code_simple, depth_bedrock)
+  ) %>%
+  ggplot() +
+  geom_pointrange(
+    aes(x = depth_bedrock,
+        xmin = depth_bedrock_min,
+        xmax = depth_bedrock_max,
+        colour = site_type,
+        y = plot_code_simple),
+    size = 0.02,
+    linewidth = 0.2,
+  ) +
+  theme(axis.text.y = element_blank(),
+        aspect.ratio = 1)
+
+suppressMessages({
+  ggsave(filename = "bedrock_depth_predictions_vertical.png",
+         plot = p,
+         path = paste0("./output/data_quality/undisturbed/"),
+         dpi = 500,
+         width = 6.81)
+})
 
 
 
@@ -2663,6 +2694,55 @@ ggsave(filename = paste0("slope_versus_worldclim",
        dpi = 500,
        width = 6.81,
        height = 3)
+
+
+
+
+
+
+## Altitude ----
+
+p <- df_plot %>%
+  filter(!grepl("EXTRA", plot_code_simple)) %>%
+  pull(altitude) %>%
+  plot_distr_simple(unit = "m a.s.l.",
+                    plot_title = paste0("**Altitude** of the plot (m a.s.l.)"))
+
+ggsave(filename = paste0("altitude",
+                         ".png"),
+       plot = p,
+       path = paste0("./output/data_quality/undisturbed/"),
+       dpi = 500,
+       width = 6.81,
+       height = 3)
+
+
+# Distribution per humus form
+
+p <- df_plot %>%
+  filter(!grepl("EXTRA", plot_code_simple)) %>%
+  select(humus_form, altitude) %>%
+  filter(humus_form != "Semi-terrestrial") %>%
+  mutate(
+    humus_form = factor(humus_form,
+                        levels = c("Tangel", "Amphi", "Mor", "Moder", "Mull"))
+  ) %>%
+  plot_distr_by_group(response_name = "altitude",
+                      group_name = "humus_form",
+                      plot_title = "**Altitude** (m a.s.l.)",
+                      nudge = 0.07)
+
+ggsave(filename = paste0("altitude_per_humus_form",
+                         ".png"),
+       plot = p,
+       path = paste0("./output/data_quality/undisturbed/"),
+       dpi = 500,
+       width = 6.81,
+       height = 3.3)
+
+
+
+
 
 
 
@@ -2792,6 +2872,41 @@ ggsave(filename = paste0("stock_forest_floor_per_humus_form",
        width = 6.81,
        height = 3.3)
 
+
+
+
+### Distribution per parent material ----
+
+p <- df_stocks %>%
+  filter(!grepl("EXTRA", plot_code_simple)) %>%
+  select(-parent_material) %>%
+  left_join(df_plot %>%
+              select(plot_code_simple, parent_material),
+            by = "plot_code_simple") %>%
+  select(parent_material, oc_stock_below_ground) %>%
+  mutate(
+    oc_stock_below_ground = coalesce(oc_stock_below_ground, 0),
+    parent_material = fct_reorder(parent_material,
+                                  oc_stock_below_ground,
+                                  .fun = mean,
+                                  na.rm = TRUE,
+                                  .desc = TRUE)
+  ) %>%
+  plot_distr_by_group(response_name = "oc_stock_below_ground",
+                      group_name = "parent_material",
+                      plot_title = paste0("**Below-ground soil organic C ",
+                                          "stock** ",
+                                          "(Mg C ha<sup>-1</sup>)"),
+                      nudge = 0.11,
+                      aspect_ratio = 1.5)
+
+ggsave(filename = paste0("stock_below_ground_per_parent_material",
+                         ".png"),
+       plot = p,
+       path = path,
+       dpi = 500,
+       width = 6.81,
+       height = 3.3)
 
 
 
