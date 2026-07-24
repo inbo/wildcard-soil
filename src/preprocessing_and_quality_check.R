@@ -1759,7 +1759,8 @@ if (apply_corrections) {
       coarse_fragment_vol_min =
         round(pmin(coarse_fragment_vol, coarse_fragment_vol_min)),
       coarse_fragment_vol = round(coarse_fragment_vol)) %>%
-    select(-any_of(c("prev_coaf", "prev_method")))
+    select(-any_of(c("prev_coaf", "prev_method",
+                     "coarse_fragment_vol_aux", "coarse_fragment_vol_filled")))
 
 
 df_layers2 <- df_layers
@@ -1767,30 +1768,63 @@ df_layers2 <- df_layers
 
 ## 4.3. Calculate vol_perc_fine_earth per plot ----
 
+# This should be calculated until 100 cm ortogonally.
+# For plots for which the plumb-vertical depth is deeper than 100 cm (due to
+# a slope), while data are available until 100 cm, add an extra layer
+# from 100 cm down to 1xx cm (since we need to take the stone content into
+# account - assuming the same content as M61)
+
+# Deepest layer per plot:
+extra_layers <- df_layers %>%
+  left_join(
+    df_plot_out %>%
+      select(plot_code_simple, depth_bedrock),
+    by = "plot_code_simple"
+  ) %>%
+  group_by(plot_code_simple) %>%
+  slice_max(depth_bottom, n = 1) %>%
+  ungroup() %>%
+  filter(depth_bedrock > depth_bottom) %>%
+  mutate(
+    code_layer = "X", # Name it X (doesn't matter)
+    depth_top = depth_bottom,
+    depth_bottom = depth_bedrock,
+    depth_bottom_bedrock = depth_bedrock
+  ) %>%
+  select(-depth_bedrock)
+
 df_plot_fe <- df_layers %>%
-    filter(wp == "WP2") %>%
-    mutate(
-      thickness_bedrock = ifelse(
-        # Below-ground layers above or containing lithic contact
-        !is.na(depth_bottom_bedrock) & depth_top >= 0,
-        depth_bottom_bedrock - depth_top,
-        NA_real_),
-      layer_vol_fine_earth = ifelse(
-        !is.na(thickness_bedrock),
-        thickness_bedrock * (1 - 1E-2 * coarse_fragment_vol),
-        NA_real_)
-    ) %>%
-    group_by(plot_code_simple) %>%
-    reframe(
-      vol_fine_earth = ifelse(
-        any(!is.na(layer_vol_fine_earth)),
-        sum(layer_vol_fine_earth, na.rm = TRUE),
-        0)
-    ) %>%
-    mutate(
-      vol_perc_fine_earth = round(1E2 * (vol_fine_earth / 100))
-    ) %>%
-    select(-vol_fine_earth)
+  bind_rows(extra_layers) %>%
+  arrange(plot_code_simple, depth_bottom) %>%
+  filter(wp == "WP2") %>%
+  mutate(
+    thickness_bedrock = ifelse(
+      # Below-ground layers above or containing lithic contact
+      !is.na(depth_bottom_bedrock) & depth_top >= 0,
+      depth_bottom_bedrock - depth_top,
+      NA_real_),
+    layer_vol_fine_earth = ifelse(
+      !is.na(thickness_bedrock),
+      thickness_bedrock * (1 - 1E-2 * coalesce(coarse_fragment_vol, 0)),
+      NA_real_)
+  ) %>%
+  left_join(
+    df_plot_out %>%
+      select(plot_code_simple, slope_deg),
+    by = "plot_code_simple"
+  ) %>%
+  group_by(plot_code_simple, slope_deg) %>%
+  reframe(
+    vol_fine_earth = ifelse(
+      any(!is.na(layer_vol_fine_earth)),
+      sum(layer_vol_fine_earth, na.rm = TRUE),
+      0)
+  ) %>%
+  mutate(
+    depth_max = round(100 / cos(slope_deg * pi / 180)),
+    vol_perc_fine_earth = round(1E2 * (vol_fine_earth / depth_max))
+  ) %>%
+  select(-vol_fine_earth, -depth_max, -slope_deg)
 
 
 
@@ -1840,9 +1874,7 @@ df_plot_fe <- df_layers %>%
       else coarse_fragment_vol_min,
       coarse_fragment_vol_max =
         if (!"coarse_fragment_vol_max" %in% names(.)) NA_real_
-      else coarse_fragment_vol_max,
-      coarse_fragment_vol_p1 = P1_coaf_2mm,
-      coarse_fragment_vol_p1_50mm = P1_coaf_50mm
+      else coarse_fragment_vol_max
       ) %>%
     # Add composed_site_id
     left_join(
@@ -2005,7 +2037,7 @@ df_plot_fe <- df_layers %>%
 path_m12 <- "./output/project_requests/m12/"
 
 timestamp <- gsub("-", "", as.character(Sys.Date()))
-version <- "v1.0"
+version <- "v1.1"
 
 
 ##### Layer data ----
@@ -2020,8 +2052,8 @@ cols_layers <- c(
   "thickness",
   "coarse_fragment_vol",
   # Do not include original sources for coarse_fragment_vol
-  # "coarse_fragment_vol_p1",  #P1_coaf_2mm
-  # "coarse_fragment_vol_p1_50mm", #P1_coaf_50mm
+  # "P1_coaf_2mm"
+  # "P1_coaf_50mm"
   # "coarse_fragment_vol_ring",
   "bulk_density",
   "areal_mass",
@@ -2178,7 +2210,7 @@ create_attribute_catalogue(wp2_plot_data,
 path_clean <- "./data/clean_data/"
 
 timestamp <- gsub("-", "", as.character(Sys.Date()))
-version <- "v1.0"
+version <- "v1.1"
 
 
 ##### Layer data ----
@@ -2193,8 +2225,8 @@ cols_layers <- c(
   "thickness",
   "coarse_fragment_vol",
   # Do not include original sources for coarse_fragment_vol
-  # "coarse_fragment_vol_p1",  #P1_coaf_2mm
-  # "coarse_fragment_vol_p1_50mm", #P1_coaf_50mm
+  # "P1_coaf_2mm"
+  # "P1_coaf_50mm"
   # "coarse_fragment_vol_ring",
   "bulk_density",
   "areal_mass",
