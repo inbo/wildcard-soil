@@ -979,7 +979,11 @@ app_data_long <- function(app_data_wide,
         NA_real_),
       thickness = ifelse(
         any(!is.na(thickness)),
-        round(mean(as.numeric(thickness), na.rm = TRUE), 1),
+        case_when(
+          plot_code_simple == "WSL__25__Seeliwald__NA" ~
+            round(mean(as.numeric(thickness), na.rm = TRUE)),
+          TRUE ~ round(mean(as.numeric(thickness), na.rm = TRUE), 1)
+        ),
         NA_real_),
       tamass_compiled = paste(as.character(round(tamass)), collapse = ","),
       tamass_mean = ifelse(
@@ -2765,18 +2769,19 @@ app_data_long <- function(app_data_wide,
     df_layers_all <- df_layers_all %>%
       mutate(
         depth_top = case_when(
-          plot_code_simple == "WSL__25__Seeliwald__NA" ~ depth_top + 45,
+          plot_code_simple == "WSL__25__Seeliwald__NA" ~ round(depth_top + 45),
           TRUE ~ depth_top
         ),
         depth_bottom = case_when(
-          plot_code_simple == "WSL__25__Seeliwald__NA" ~ depth_bottom + 45,
+          plot_code_simple == "WSL__25__Seeliwald__NA" ~
+            round(depth_bottom + 45),
           TRUE ~ depth_bottom
         ),
         depth_bottom_bedrock = ifelse(
           plot_code_simple == "WSL__25__Seeliwald__NA",
           case_when(
             depth_top >= depth_bedrock ~ NA_real_,
-            depth_bottom > depth_bedrock ~ depth_bedrock,
+            depth_bottom > depth_bedrock ~ round(depth_bedrock),
             TRUE ~ depth_bottom
           ),
           depth_bottom_bedrock

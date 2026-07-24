@@ -208,22 +208,22 @@ get_app_data <- function(path = NULL,
 
   files_to_exclude <- c(
     paste0(path_app_data,
-           "VUK-Czechia-Hungary/WP3_sites/Beskydy-Mts/",
+           "VUK/WP3_sites/Beskydy-Mts/",
            "WILDCARD-WP3-CZ-VUK-Beskydy soils.xlsx"),
     paste0(path_app_data,
-           "VUK-Czechia-Hungary/WP3_sites/Bohemian-Karst/",
+           "VUK/WP3_sites/Bohemian-Karst/",
            "WILDCARD-WP3-CZ-VUK-Cesky Kras (Bohemian Karst) soils.xlsx"),
     paste0(path_app_data,
-           "VUK-Czechia-Hungary/WP3_sites/Hungary-Kiskunsag/",
+           "VUK/WP3_sites/Hungary-Kiskunsag/",
            "WILDCARD-WP3-HU-VUK-Kiskusag soils.xlsx"),
     paste0(path_app_data,
-           "VUK-Czechia-Hungary/WP3_sites/Hungary-Tokaj/",
+           "VUK/WP3_sites/Hungary-Tokaj/",
            "WILDCARD-WP3-HU-VUK-Tokaj soils.xlsx"),
     paste0(path_app_data,
-           "VUK-Czechia-Hungary/WP3_sites/Sumava-Dry/",
+           "VUK/WP3_sites/Sumava-Dry/",
            "WILDCARD-WP3-CZ-VUK-Sumava_dry_soils.xlsx"),
     paste0(path_app_data,
-           "VUK-Czechia-Hungary/WP3_sites/Sumava-Wet/",
+           "VUK/WP3_sites/Sumava-Wet/",
            "WILDCARD-WP3-CZ-VUK-Sumava-wet-soils.xlsx"))
 
   app_files <- app_files[which(!app_files %in% files_to_exclude)]
