@@ -1557,6 +1557,18 @@ if (apply_corrections) {
     rowwise() %>%
     mutate(bd_unc = list(add_bd_uncertainty(bulk_density))) %>%
     unnest_wider(bd_unc) %>%
+    # For Seeliwald (with one sampling point for forest floor and therefore no
+    # spatial uncertainty for areal_mass)
+    mutate(bulk_density_dist_min = ifelse(
+             !is.na(bulk_density_dist) &
+               is.na(bulk_density_dist_min) & is.na(bulk_density_dist_max),
+             unlist(add_bd_uncertainty(bulk_density_dist)[[1]]),
+             bulk_density_dist_min),
+           bulk_density_dist_max = ifelse(
+             !is.na(bulk_density_dist) &
+               is.na(bulk_density_dist_max),
+             unlist(add_bd_uncertainty(bulk_density_dist)[[2]]),
+             bulk_density_dist_max)) %>%
     rename(mass_before_undist = mass_before,
            mass_after_undist = mass_after,
            bulk_density_undist = bulk_density,
@@ -1766,69 +1778,6 @@ if (apply_corrections) {
 df_layers2 <- df_layers
 
 
-## 4.3. Calculate vol_perc_fine_earth per plot ----
-
-# This should be calculated until 100 cm ortogonally.
-# For plots for which the plumb-vertical depth is deeper than 100 cm (due to
-# a slope), while data are available until 100 cm, add an extra layer
-# from 100 cm down to 1xx cm (since we need to take the stone content into
-# account - assuming the same content as M61)
-
-# Deepest layer per plot:
-extra_layers <- df_layers %>%
-  left_join(
-    df_plot_out %>%
-      select(plot_code_simple, depth_bedrock),
-    by = "plot_code_simple"
-  ) %>%
-  group_by(plot_code_simple) %>%
-  slice_max(depth_bottom, n = 1) %>%
-  ungroup() %>%
-  filter(depth_bedrock > depth_bottom) %>%
-  mutate(
-    code_layer = "X", # Name it X (doesn't matter)
-    depth_top = depth_bottom,
-    depth_bottom = depth_bedrock,
-    depth_bottom_bedrock = depth_bedrock
-  ) %>%
-  select(-depth_bedrock)
-
-df_plot_fe <- df_layers %>%
-  bind_rows(extra_layers) %>%
-  arrange(plot_code_simple, depth_bottom) %>%
-  filter(wp == "WP2") %>%
-  mutate(
-    thickness_bedrock = ifelse(
-      # Below-ground layers above or containing lithic contact
-      !is.na(depth_bottom_bedrock) & depth_top >= 0,
-      depth_bottom_bedrock - depth_top,
-      NA_real_),
-    layer_vol_fine_earth = ifelse(
-      !is.na(thickness_bedrock),
-      thickness_bedrock * (1 - 1E-2 * coalesce(coarse_fragment_vol, 0)),
-      NA_real_)
-  ) %>%
-  left_join(
-    df_plot_out %>%
-      select(plot_code_simple, slope_deg),
-    by = "plot_code_simple"
-  ) %>%
-  group_by(plot_code_simple, slope_deg) %>%
-  reframe(
-    vol_fine_earth = ifelse(
-      any(!is.na(layer_vol_fine_earth)),
-      sum(layer_vol_fine_earth, na.rm = TRUE),
-      0)
-  ) %>%
-  mutate(
-    depth_max = round(100 / cos(slope_deg * pi / 180)),
-    vol_perc_fine_earth = round(1E2 * (vol_fine_earth / depth_max))
-  ) %>%
-  select(-vol_fine_earth, -depth_max, -slope_deg)
-
-
-
-
 
 
 
@@ -1845,8 +1794,6 @@ df_plot_fe <- df_layers %>%
 
 # 5. Prepare output datasets ----
 
-## 5.1. Compile and tidy pre-processed soil physicochemical data ----
-
 # Note:
 # LWF__65_a__Friedergries__NA OFH_carbon has been retaken during the second
 # sampling campaign by LWF, as the first sample contained a lot of roots
@@ -1856,9 +1803,9 @@ df_plot_fe <- df_layers %>%
 # "DE__LWF__65_a__NA__NA__OFH_carbon_b" → we proceed with these results
 
 
+source("./src/functions/update_ids.R")
 
-
-### 5.1.1. Compile df_layers ----
+## 5.1. Compile df_layers ----
 
   # Arrange, add lab data and gap-fill
 
@@ -1925,7 +1872,9 @@ df_plot_fe <- df_layers %>%
                # Stoichiometric ratio (m/m) - maximum
                round(c_organic_total_max / n_total_min, 2),
                NA_real_
-        ))
+        )) %>%
+    # Update composed_site_id, plot_code_simple etc based on latest version
+    update_ids
 
 
 
@@ -1950,7 +1899,7 @@ df_plot_fe <- df_layers %>%
                               bulk_density_ptf),
       bulk_density_min = coalesce(bulk_density_min,
                                   bulk_density_ptf_min),
-      bulk_density_max = coalesce(bulk_density_min,
+      bulk_density_max = coalesce(bulk_density_max,
                                   bulk_density_ptf_max),
       # Organic carbon
       c_organic_total_source = case_when(
@@ -1971,14 +1920,150 @@ df_plot_fe <- df_layers %>%
         # Mean + stdev
         plot_code_simple == "WSL__25__Seeliwald__NA" & code_layer == "OL" ~
           445.64 + 65.05,
-        TRUE ~ c_organic_total_max))
+        TRUE ~ c_organic_total_max),
+      # Total N
+      n_total_source = case_when(
+        plot_code_simple == "WSL__25__Seeliwald__NA" & code_layer == "OL" ~
+          "Mean for HF (fibric peat; ICP Forests Level I)",
+        !is.na(n_total) ~ "Measured"),
+      n_total = case_when(
+        # HF (mean ICP Forests Level I for HF)
+        plot_code_simple == "WSL__25__Seeliwald__NA" & code_layer == "OL" ~
+          17.061,
+        TRUE ~ n_total),
+      n_total_min = case_when(
+        # Mean - stdev
+        plot_code_simple == "WSL__25__Seeliwald__NA" & code_layer == "OL" ~
+          17.061 - 4.153,
+        TRUE ~ n_total_min),
+      n_total_max = case_when(
+        # Mean + stdev
+        plot_code_simple == "WSL__25__Seeliwald__NA" & code_layer == "OL" ~
+          17.061 + 4.153,
+        TRUE ~ n_total_max))
+
+
+# Add layer stocks if existing
+
+oc_stock_dir <- get_path_most_recent_stocks(shorter_var_name = "oc")
+n_stock_dir <- get_path_most_recent_stocks(shorter_var_name = "n")
+
+if (!is.na(oc_stock_dir) &&
+    !is.na(n_stock_dir)) {
+
+  layer_stocks_bg <- read.csv(paste0(oc_stock_dir, "soil_oc_stocks.csv"),
+                            sep = ";") %>%
+    select(plot_code_simple,
+           contains("stock_0_10"),
+           contains("stock_10_30"),
+           contains("stock_30_60"),
+           contains("stock_60_100")) %>%
+    left_join(
+      read.csv(paste0(n_stock_dir, "soil_n_stocks.csv"),
+               sep = ";") %>%
+        select(plot_code_simple,
+               contains("stock_0_10"),
+               contains("stock_10_30"),
+               contains("stock_30_60"),
+               contains("stock_60_100")),
+      by = "plot_code_simple") %>%
+    pivot_longer(
+      cols = -plot_code_simple,
+      names_to = "variable",
+      values_to = "value") %>%
+    mutate(
+      layer = str_extract(variable, "\\d+_\\d+"),
+      type = case_when(
+        str_starts(variable, "oc_") & str_ends(variable, "_min") ~
+          "oc_stock_layer_min",
+        str_starts(variable, "oc_") & str_ends(variable, "_max") ~
+          "oc_stock_layer_max",
+        str_starts(variable, "n_") & str_ends(variable, "_min") ~
+          "n_stock_layer_min",
+        str_starts(variable, "n_") & str_ends(variable, "_max") ~
+          "n_stock_layer_max",
+        str_starts(variable, "oc_") ~ "oc_stock_layer",
+        str_starts(variable, "n_") ~ "n_stock_layer")
+    ) %>%
+    select(-variable) %>%
+    pivot_wider(
+      names_from = type,
+      values_from = value
+    ) %>%
+    mutate(
+      depth_top = case_when(
+        layer == "0_10" ~ 0,
+        layer == "10_30" ~ 10,
+        layer == "30_60" ~ 30,
+        layer == "60_100" ~ 60),
+      depth_bottom = case_when(
+        layer == "0_10" ~ 10,
+        layer == "10_30" ~ 30,
+        layer == "30_60" ~ 60,
+        layer == "60_100" ~ 100)) %>%
+    select(-layer)
+
+  layer_stocks_ff <- read.csv(paste0(oc_stock_dir, "soil_oc_stocks.csv"),
+                              sep = ";") %>%
+    select(plot_code_simple,
+           contains("stock_forest_floor")) %>%
+    left_join(
+      read.csv(paste0(n_stock_dir, "soil_n_stocks.csv"),
+               sep = ";") %>%
+        select(plot_code_simple,
+               contains("stock_forest_floor")),
+      by = "plot_code_simple") %>%
+    mutate(
+      code_layer = "OFH",
+      depth_bottom = 0)
+
+
+  df_layers_result <- df_layers_filled %>%
+    # Use full_join rather than left_join because of Seeliwald with
+    # non-default depth limits
+    full_join(
+      layer_stocks_bg,
+      by = c("plot_code_simple", "depth_top", "depth_bottom")) %>%
+    # Use a left_join for forest floor, since OFH layers that were absent
+    # do not have a representative layer in the dataset
+    left_join(
+      layer_stocks_ff,
+      by = c("plot_code_simple", "code_layer", "depth_bottom")) %>%
+    mutate(
+      oc_stock_layer = coalesce(oc_stock_layer,
+                                oc_stock_forest_floor),
+      oc_stock_layer_min = coalesce(oc_stock_layer_min,
+                                    oc_stock_forest_floor_min),
+      oc_stock_layer_max = coalesce(oc_stock_layer_max,
+                                    oc_stock_forest_floor_max),
+      n_stock_layer = coalesce(n_stock_layer,
+                               n_stock_forest_floor),
+      n_stock_layer_min = coalesce(n_stock_layer_min,
+                                   n_stock_forest_floor_min),
+      n_stock_layer_max = coalesce(n_stock_layer_max,
+                                   n_stock_forest_floor_max)) %>%
+    select(-any_of(c("oc_stock_forest_floor", "oc_stock_forest_floor_min",
+                     "oc_stock_forest_floor_max", "n_stock_forest_floor",
+                     "n_stock_forest_floor_min", "n_stock_forest_floor_max"))
+           ) %>%
+    # Round to three decimals
+    mutate(
+      oc_stock_layer = round(oc_stock_layer, 3),
+      oc_stock_layer_min = round(oc_stock_layer_min, 3),
+      oc_stock_layer_max = round(oc_stock_layer_max, 3),
+      n_stock_layer = round(n_stock_layer, 3),
+      n_stock_layer_min = round(n_stock_layer_min, 3),
+      n_stock_layer_max = round(n_stock_layer_max, 3))
+
+} else {
+  df_layers_result <- df_layers_filled
+}
 
 
 
 
 
-
-### 5.1.2. Compile df_plot ----
+## 5.2. Compile df_plot ----
 
   # Arrange data
 
@@ -2007,10 +2092,6 @@ df_plot_fe <- df_layers %>%
                sub_id, plot_id, eftc, eft, his_soil_water, his_soil_nutrient,
                tsa_derived, tsa_class, year_reserve, year_abandonment),
       by = "plot_code_simple") %>%
-    # Add vol_perc_fine_earth
-    left_join(
-      df_plot_fe,
-      by = "plot_code_simple") %>%
     # Add particle density
     left_join(
       undist_harm %>%
@@ -2020,27 +2101,34 @@ df_plot_fe <- df_layers %>%
             any(!is.na(pd_plot)),
             round(mean(pd_plot, na.rm = TRUE)),
             NA_real_)),
-      by = "plot_code_simple")
+      by = "plot_code_simple") %>%
+    # Update composed_site_id, plot_code_simple etc based on latest version
+    update_ids
 
 
 
 
 
 
-### 5.1.3. Milestone 12 ----
+## 5.3. Milestone 12 ----
 
 # - Remove gap-filled data
 #   (bulk density based on pedotransfer, TOC based on HF mean for Seeliwald)
 # - Remove EXTRA sites
 # - Remove "min" and "max" columns?
 
-path_m12 <- "./output/project_requests/m12/"
-
 timestamp <- gsub("-", "", as.character(Sys.Date()))
-version <- "v1.1"
+path_m12 <- paste0("./output/project_requests/m12/", timestamp, "/")
+version <- "v1.2"
+
+if (!dir.exists(path_m12)) {
+  dir.create(path_m12, recursive = TRUE)
+}
 
 
-##### Layer data ----
+
+
+#### Layer data ----
 
 cols_layers <- c(
   # "wp",
@@ -2137,7 +2225,6 @@ cols_plot <- c(
   "slope_type",
   "slope_deg",
   "depth_bedrock",
-  "vol_perc_fine_earth",
   "humus_form",
   "wrb_ref_soil_group",
   "wrb_qualifier_1", # (not mandatory)
@@ -2203,17 +2290,19 @@ create_attribute_catalogue(wp2_plot_data,
 
 
 
-### 5.1.4. Clean data ----
+## 5.4. Clean data ----
 #          Gap-filled data - to share with project partners
 #          Remove EXTRA plots BFNP but not those of UNIUD
 
-path_clean <- "./data/clean_data/"
-
 timestamp <- gsub("-", "", as.character(Sys.Date()))
-version <- "v1.1"
+path_clean <- paste0("./data/clean_data/", timestamp, "/")
+version <- "v1.2"
 
+if (!dir.exists(path_clean)) {
+  dir.create(path_clean, recursive = TRUE)
+}
 
-##### Layer data ----
+#### Layer data ----
 
 cols_layers <- c(
   # "wp",
@@ -2237,6 +2326,8 @@ cols_layers <- c(
   "n_total",
   "c_inorganic_total",
   "c_to_n_ratio",
+  "oc_stock_layer",
+  "n_stock_layer",
   "ph_cacl2",
   "clay",
   "silt",
@@ -2248,7 +2339,7 @@ cols_layers <- c(
 # Which of those columns do not exist?
 assertthat::assert_that(
   identical(
-    cols_layers[which(!cols_layers %in% names(df_layers_filled))],
+    cols_layers[which(!cols_layers %in% names(df_layers_result))],
     character(0)))
 
 # Ordered vector
@@ -2262,11 +2353,11 @@ cols_layers <- unlist(lapply(cols_layers, function(x) {
 
 # Keep only columns that actually exist in df_layers
 cols_layers <- cols_layers[
-  cols_layers %in% names(df_layers_filled)
+  cols_layers %in% names(df_layers_result)
 ]
 
 # Select columns in desired order
-wp2_layer_data <- df_layers_filled[, cols_layers]
+wp2_layer_data <- df_layers_result[, cols_layers]
 
 
 
@@ -2312,7 +2403,6 @@ cols_plot <- c(
   "slope_type",
   "slope_deg",
   "depth_bedrock",
-  "vol_perc_fine_earth",
   "humus_form",
   "wrb_ref_soil_group",
   "wrb_qualifier_1", # (not mandatory)
@@ -2383,23 +2473,6 @@ create_attribute_catalogue(wp2_plot_data,
                                                  "EVINBO_"))
 
 
-# TO DOs stocks
-# - calculate stocks VUK for both the standard P1 coarse fragments, and the
-#   average coarse fragments across the plot, to see the sensitivity.
-# - calculate stocks for coarse fragments 2-50 mm from both lab and field
-#   estimates, to see the sensitivity
-# - calculate the stocks for uncapped slopes and capped at 40 °C, to see
-#   the sensitivity
-# - calculate stocks, concentrations, and maybe TOC * bulk_density of M01,
-#   to see the sensitivity
-
-
-# Note:
-# - "Clean data" were shared as metadata for eDNA
-
-
-
-## 5.2. Compile data flammability analysis ----
 
 
 
@@ -2407,9 +2480,14 @@ create_attribute_catalogue(wp2_plot_data,
 
 
 
-## 5.3. Compile inconsistencies ----
 
-### 5.3.1. Compile all inconsistency reports ----
+
+
+
+
+## 5.6. Compile inconsistencies ----
+
+### 5.6.1. Compile all inconsistency reports ----
 
 if (create_inconsistency_report) {
 
@@ -2536,7 +2614,7 @@ if (create_inconsistency_report) {
 
 
 
-### 5.3.2. Export ----
+### 5.6.2. Export ----
 
 if (create_inconsistency_report) {
 
